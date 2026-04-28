@@ -2,6 +2,7 @@
 
 import {
   AlertCircle,
+  ChevronDown,
   Download,
   ImagePlus,
   Loader2,
@@ -18,8 +19,8 @@ import {
   ZoomIn,
   ZoomOut
 } from "lucide-react";
-import type { FormEvent } from "react";
-import { useMemo, useState } from "react";
+import type { FocusEvent, FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { formatDownloadFilename } from "@/lib/download-filename";
 import {
@@ -28,44 +29,33 @@ import {
   DEFAULT_IMAGE_VIEWER_ZOOM
 } from "@/lib/generation-history";
 import type {
+  GenerationUsage,
+  StoredGeneratedImage,
+  StoredGenerationSession
+} from "@/lib/generation-history-types";
+import type {
   ImageOutputFormat,
   ImageQuality,
   ImageSize
 } from "@/lib/image-options";
 
-type GeneratedImage = {
-  id: string;
-  dataUrl: string;
-};
-
-type Usage = {
-  total_tokens?: number;
-  input_tokens?: number;
-  output_tokens?: number;
-};
+type GeneratedImage = StoredGeneratedImage;
+type Usage = GenerationUsage;
 
 type GenerateResponse = {
   images?: GeneratedImage[];
   model?: string;
   usage?: Usage | null;
+  session?: GenerationSession;
   error?: string;
 };
 
-type GenerationSession = {
-  id: string;
-  title: string;
-  prompt: string;
-  size: ImageSize;
-  sizeLabel: string;
-  sizeValue: string;
-  qualityLabel: string;
-  outputFormat: ImageOutputFormat;
-  count: number;
-  images: GeneratedImage[];
-  model: string;
-  usage: Usage | null;
-  createdAt: string;
+type HistoryResponse = {
+  sessions?: StoredGenerationSession[];
+  error?: string;
 };
+
+type GenerationSession = StoredGenerationSession;
 
 type ViewerImage = {
   image: GeneratedImage;
@@ -99,14 +89,51 @@ const recentPlaceholders = [
   "产品摄影构图"
 ] as const;
 
-const sizeOptions: Array<{ value: ImageSize; label: string; ratio: string }> = [
-  { value: "1024x1024", label: "方形 1:1", ratio: "1024 x 1024" },
-  { value: "1536x1024", label: "横版 3:2", ratio: "1536 x 1024" },
-  { value: "1024x1536", label: "竖版 2:3", ratio: "1024 x 1536" },
-  { value: "2048x2048", label: "方形 2K", ratio: "2048 x 2048" },
-  { value: "2048x1152", label: "横版 2K", ratio: "2048 x 1152" },
-  { value: "3840x2160", label: "横版 4K", ratio: "3840 x 2160" },
-  { value: "2160x3840", label: "竖版 4K", ratio: "2160 x 3840" }
+type SizeOption = {
+  value: ImageSize;
+  label: string;
+  ratio: string;
+  dimensions: string;
+  previewClass: string;
+};
+
+// 按官网样式展示常用画幅比例，底层仍传入符合接口约束的实际像素尺寸。
+const sizeOptions: SizeOption[] = [
+  {
+    value: "1024x1024",
+    label: "Square",
+    ratio: "1:1",
+    dimensions: "1024 x 1024",
+    previewClass: "square"
+  },
+  {
+    value: "1536x2048",
+    label: "Portrait",
+    ratio: "3:4",
+    dimensions: "1536 x 2048",
+    previewClass: "portrait"
+  },
+  {
+    value: "1152x2048",
+    label: "Story",
+    ratio: "9:16",
+    dimensions: "1152 x 2048",
+    previewClass: "story"
+  },
+  {
+    value: "2048x1536",
+    label: "Landscape",
+    ratio: "4:3",
+    dimensions: "2048 x 1536",
+    previewClass: "landscape"
+  },
+  {
+    value: "2048x1152",
+    label: "Widescreen",
+    ratio: "16:9",
+    dimensions: "2048 x 1152",
+    previewClass: "widescreen"
+  }
 ];
 
 const qualityOptions: Array<{ value: ImageQuality; label: string }> = [
@@ -121,18 +148,14 @@ const formatOptions: Array<{ value: ImageOutputFormat; label: string }> = [
   { value: "jpeg", label: "JPEG" }
 ];
 
-const customSizeOptionValue = "__custom__";
-
-function normalizeSizeValue(value: string): ImageSize {
-  return value.trim().toLowerCase().replace(/\s+/g, "") as ImageSize;
-}
-
-function formatSizeText(value: string): string {
-  return value.includes("x") ? value.replace("x", " × ") : value || "-";
-}
-
 function createSessionId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function readSelectableSize(value: ImageSize): ImageSize {
+  return sizeOptions.some((option) => option.value === value)
+    ? value
+    : sizeOptions[0].value;
 }
 
 function downloadImage(
@@ -150,8 +173,7 @@ function downloadImage(
 export default function HomePage() {
   const [prompt, setPrompt] = useState<string>(examplePrompts[0].value);
   const [size, setSize] = useState<ImageSize>("1024x1024");
-  const [sizeMode, setSizeMode] = useState<"preset" | "custom">("preset");
-  const [customSizeInput, setCustomSizeInput] = useState("");
+  const [isSizeMenuOpen, setIsSizeMenuOpen] = useState(false);
   const [quality, setQuality] = useState<ImageQuality>("medium");
   const [outputFormat, setOutputFormat] = useState<ImageOutputFormat>("png");
   const [count, setCount] = useState(1);
@@ -165,13 +187,9 @@ export default function HomePage() {
   const [viewerImage, setViewerImage] = useState<ViewerImage | null>(null);
   const [viewerZoom, setViewerZoom] = useState(DEFAULT_IMAGE_VIEWER_ZOOM);
 
-  const effectiveSize = useMemo(
-    () => (sizeMode === "custom" ? normalizeSizeValue(customSizeInput) : size),
-    [customSizeInput, size, sizeMode]
-  );
   const selectedSize = useMemo(
-    () => sizeOptions.find((option) => option.value === effectiveSize),
-    [effectiveSize]
+    () => sizeOptions.find((option) => option.value === size) ?? sizeOptions[0],
+    [size]
   );
   const activeSession = useMemo(
     () =>
@@ -180,15 +198,8 @@ export default function HomePage() {
       null,
     [activeSessionId, sessions]
   );
-  const sizeSelectValue = sizeMode === "custom" ? customSizeOptionValue : size;
-  const sizeDisplayLabel = selectedSize
-    ? selectedSize.label
-    : effectiveSize
-      ? `自定义 ${effectiveSize}`
-      : "自定义尺寸";
-  const sizeDisplayValue = selectedSize
-    ? selectedSize.ratio
-    : formatSizeText(effectiveSize);
+  const sizeDisplayLabel = `${selectedSize.label} ${selectedSize.ratio}`;
+  const sizeDisplayValue = `${selectedSize.ratio} · ${selectedSize.dimensions}`;
   const qualityLabel =
     qualityOptions.find((option) => option.value === quality)?.label ?? "平衡";
   const currentModel = activeSession?.model || model || "待生成";
@@ -199,24 +210,73 @@ export default function HomePage() {
 
   const canGenerate = useMemo(
     () =>
-      prompt.trim().length > 0 && effectiveSize.trim().length > 0 && !isGenerating,
-    [effectiveSize, prompt, isGenerating]
+      prompt.trim().length > 0 && size.trim().length > 0 && !isGenerating,
+    [prompt, size, isGenerating]
   );
 
-  function handleSizeOptionChange(value: string): void {
-    if (value === customSizeOptionValue) {
-      setSizeMode("custom");
-      setCustomSizeInput((current) => current || size);
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadStoredSessions(): Promise<void> {
+      try {
+        const response = await fetch("/api/generation-history", {
+          cache: "no-store"
+        });
+
+        if (!response.ok) {
+          return;
+        }
+
+        const payload = (await response.json()) as HistoryResponse;
+        const storedSessions = Array.isArray(payload.sessions)
+          ? payload.sessions
+          : [];
+        const latestSession = storedSessions[0];
+
+        if (!isMounted || !latestSession) {
+          return;
+        }
+
+        setSessions(storedSessions);
+        setActiveSessionId(latestSession.id);
+        setPrompt(latestSession.prompt);
+        setImages(latestSession.images);
+        setModel(latestSession.model);
+        setUsage(latestSession.usage);
+        setOutputFormat(latestSession.outputFormat);
+        setCount(latestSession.count);
+        setSize(readSelectableSize(latestSession.size));
+      } catch {
+        // 本地历史加载失败不阻塞生成流程，保持当前默认状态即可。
+      }
+    }
+
+    void loadStoredSessions();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  function handleSizeOptionChange(value: ImageSize): void {
+    setSize(value);
+    setIsSizeMenuOpen(false);
+  }
+
+  function handleSizePickerBlur(event: FocusEvent<HTMLDivElement>): void {
+    const nextFocusedElement = event.relatedTarget;
+
+    if (
+      nextFocusedElement instanceof Node &&
+      event.currentTarget.contains(nextFocusedElement)
+    ) {
       return;
     }
 
-    setSizeMode("preset");
-    setSize(value as ImageSize);
+    setIsSizeMenuOpen(false);
   }
 
   function handleSelectSession(session: GenerationSession): void {
-    const isPresetSize = sizeOptions.some((option) => option.value === session.size);
-
     setActiveSessionId(session.id);
     setPrompt(session.prompt);
     setImages(session.images);
@@ -224,15 +284,7 @@ export default function HomePage() {
     setUsage(session.usage);
     setOutputFormat(session.outputFormat);
     setCount(session.count);
-
-    if (isPresetSize) {
-      setSizeMode("preset");
-      setSize(session.size);
-      return;
-    }
-
-    setSizeMode("custom");
-    setCustomSizeInput(session.size);
+    setSize(readSelectableSize(session.size));
   }
 
   function openViewer(
@@ -264,10 +316,15 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt,
-          size: effectiveSize,
+          size,
           quality,
           outputFormat,
-          count
+          count,
+          history: {
+            sizeLabel: sizeDisplayLabel,
+            sizeValue: sizeDisplayValue,
+            qualityLabel
+          }
         })
       });
       const payload = (await response.json()) as GenerateResponse;
@@ -279,11 +336,11 @@ export default function HomePage() {
       const nextImages = payload.images || [];
       const nextModel = payload.model || "";
       const nextUsage = payload.usage || null;
-      const nextSession: GenerationSession = {
+      const nextSession: GenerationSession = payload.session ?? {
         id: createSessionId(),
         title: createGenerationTitle(prompt),
         prompt: prompt.trim(),
-        size: effectiveSize,
+        size,
         sizeLabel: sizeDisplayLabel,
         sizeValue: sizeDisplayValue,
         qualityLabel,
@@ -303,7 +360,10 @@ export default function HomePage() {
       setUsage(nextUsage);
       setActiveSessionId(nextSession.id);
       // 只保留最近 12 条，保持侧边栏轻量且不引入持久化复杂度。
-      setSessions((currentSessions) => [nextSession, ...currentSessions].slice(0, 12));
+      setSessions((currentSessions) => {
+        const nextSessions = [nextSession, ...currentSessions].slice(0, 12);
+        return nextSessions;
+      });
     } catch (generationError) {
       const message =
         generationError instanceof Error
@@ -418,25 +478,46 @@ export default function HomePage() {
             <div className="form-grid">
               <label className="field size-field">
                 <span>尺寸</span>
-                <select
-                  value={sizeSelectValue}
-                  onChange={(event) => handleSizeOptionChange(event.target.value)}
-                >
-                  {sizeOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label} · {option.ratio}
-                    </option>
-                  ))}
-                  <option value={customSizeOptionValue}>自定义尺寸</option>
-                </select>
-                {sizeMode === "custom" ? (
-                  <input
-                    type="text"
-                    value={customSizeInput}
-                    onChange={(event) => setCustomSizeInput(event.target.value)}
-                    placeholder="例如 2304x1296"
-                  />
-                ) : null}
+                <div className="aspect-ratio-picker" onBlur={handleSizePickerBlur}>
+                  <button
+                    className="aspect-ratio-trigger"
+                    type="button"
+                    aria-expanded={isSizeMenuOpen}
+                    aria-haspopup="listbox"
+                    onClick={() => setIsSizeMenuOpen((isOpen) => !isOpen)}
+                  >
+                    <span className="aspect-ratio-trigger-icon" aria-hidden="true" />
+                    <span>Aspect ratio</span>
+                    <ChevronDown
+                      className={isSizeMenuOpen ? "is-open" : ""}
+                      size={18}
+                      aria-hidden="true"
+                    />
+                  </button>
+
+                  {isSizeMenuOpen ? (
+                    <div className="aspect-ratio-menu" role="listbox">
+                      <p>Generate this image with a different aspect ratio</p>
+                      {sizeOptions.map((option) => (
+                        <button
+                          className="aspect-ratio-option"
+                          key={option.value}
+                          type="button"
+                          role="option"
+                          aria-selected={option.value === size}
+                          onClick={() => handleSizeOptionChange(option.value)}
+                        >
+                          <span
+                            className={`ratio-preview ratio-preview-${option.previewClass}`}
+                            aria-hidden="true"
+                          />
+                          <span className="ratio-label">{option.label}</span>
+                          <span className="ratio-value">{option.ratio}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               </label>
 
               <label className="field">
@@ -486,7 +567,7 @@ export default function HomePage() {
               </label>
             </div>
             <p className="field-hint">
-              自定义尺寸需满足最大边 ≤ 3840、宽高为 16 的倍数、长宽比 ≤ 3:1、总像素 0.65–8.3MP。
+              当前比例会自动匹配符合接口约束的像素尺寸：{sizeDisplayValue}。
             </p>
           </fieldset>
 
