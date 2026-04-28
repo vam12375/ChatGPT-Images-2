@@ -1,7 +1,7 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 
-import { formatOpenAIError } from "../src/lib/openai-error.js";
+import { formatOpenAIError } from "../src/lib/openai-error.ts";
 
 test("将 OpenAI 账单硬上限错误转换成用户可理解的中文提示", () => {
   const result = formatOpenAIError({

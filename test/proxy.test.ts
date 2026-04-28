@@ -1,30 +1,24 @@
 /**
- * 反向代理集成测试
+ * 反向代理基础测试：覆盖 Key 轮转、缓存和内存日志的核心行为。
  */
-
-import { test } from "node:test";
 import assert from "node:assert";
-import { ProxyConfig } from "../src/lib/proxy-config.js";
-import { ProxyMiddleware } from "../src/lib/proxy-middleware.js";
+import { test } from "node:test";
+
+import { ProxyConfig } from "../src/lib/proxy-config.ts";
+import { ProxyMiddleware } from "../src/lib/proxy-middleware.ts";
 
 test("ProxyConfig - 密钥轮转", () => {
-  // 模拟环境变量
-  process.env.OPENAI_API_KEYS = "key1,key2,key3";
-
-  const config = new ProxyConfig();
+  const config = new ProxyConfig(["key1", "key2", "key3"]);
 
   assert.strictEqual(config.apiKeys.length, 3);
   assert.strictEqual(config.getNextApiKey(), "key1");
   assert.strictEqual(config.getNextApiKey(), "key2");
   assert.strictEqual(config.getNextApiKey(), "key3");
-  assert.strictEqual(config.getNextApiKey(), "key1"); // 循环回到第一个
+  assert.strictEqual(config.getNextApiKey(), "key1");
 });
 
 test("ProxyConfig - 单个密钥", () => {
-  process.env.OPENAI_API_KEY = "single-key";
-  delete process.env.OPENAI_API_KEYS;
-
-  const config = new ProxyConfig();
+  const config = new ProxyConfig(["single-key"]);
 
   assert.strictEqual(config.apiKeys.length, 1);
   assert.strictEqual(config.getNextApiKey(), "single-key");
@@ -46,20 +40,17 @@ test("ProxyMiddleware - 缓存存取", () => {
   const cacheKey = "test-key";
   const data = { images: ["img1", "img2"] };
 
-  // 验证缓存为空
   assert.strictEqual(middleware.getFromCache(cacheKey), null);
 
-  // 存入缓存
   middleware.setCache(cacheKey, data);
 
-  // 验证缓存已存储
   const cached = middleware.getFromCache(cacheKey);
   assert.deepStrictEqual(cached, data);
 });
 
 test("ProxyMiddleware - 缓存过期", async () => {
   const middleware = new ProxyMiddleware();
-  middleware.maxCacheAge = 100; // 100ms 过期
+  middleware.maxCacheAge = 100;
 
   const cacheKey = "expire-test";
   const data = { images: ["img1"] };
@@ -67,10 +58,8 @@ test("ProxyMiddleware - 缓存过期", async () => {
   middleware.setCache(cacheKey, data);
   assert.deepStrictEqual(middleware.getFromCache(cacheKey), data);
 
-  // 等待缓存过期
-  await new Promise(resolve => setTimeout(resolve, 150));
+  await new Promise((resolve) => setTimeout(resolve, 150));
 
-  // 验证缓存已过期
   assert.strictEqual(middleware.getFromCache(cacheKey), null);
 });
 
@@ -79,7 +68,7 @@ test("ProxyMiddleware - 请求日志", () => {
 
   const options = {
     prompt: "长描述文本".repeat(20),
-    size: "1024x1024"
+    size: "1024x1024" as const
   };
 
   middleware.logRequest(options);
@@ -93,16 +82,12 @@ test("ProxyMiddleware - 请求日志", () => {
 test("ProxyMiddleware - 日志数量限制", () => {
   const middleware = new ProxyMiddleware();
 
-  // 添加101条日志
-  for (let i = 0; i < 101; i++) {
+  for (let i = 0; i < 101; i += 1) {
     middleware.logRequest({ prompt: `描述${i}`, size: "1024x1024" });
   }
 
-  // 验证只保留最近100条
   const logs = middleware.getRequestLog();
   assert.strictEqual(logs.length, 100);
-  assert.strictEqual(logs[0].prompt, "描述1"); // 第一条应该被删除
-  assert.strictEqual(logs[99].prompt, "描述100"); // 最后一条
+  assert.strictEqual(logs[0].prompt, "描述1");
+  assert.strictEqual(logs[99].prompt, "描述100");
 });
-
-console.log("✅ 所有反向代理测试通过！");

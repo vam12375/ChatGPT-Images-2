@@ -7,17 +7,21 @@ import { handleProxyRequest } from "@/lib/proxy-handler";
 
 export const runtime = "nodejs";
 
-function toErrorResponse(message, status = 400) {
+function toErrorResponse(message: string, status = 400): Response {
   return Response.json({ error: message }, { status });
 }
 
-export async function POST(request) {
+function readErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+export async function POST(request: Request): Promise<Response> {
   let options;
 
   try {
     options = parseImageRequest(await request.json());
   } catch (error) {
-    return toErrorResponse(error.message || "请求参数无效");
+    return toErrorResponse(readErrorMessage(error, "请求参数无效"));
   }
 
   try {
@@ -34,6 +38,7 @@ export async function POST(request) {
       cached: result.cached || false
     });
   } catch (error) {
+    // 统一出口保留中文错误，避免把 SDK 原始对象直接暴露给前端。
     const formattedError = formatOpenAIError(error);
     return toErrorResponse(formattedError.message, formattedError.status);
   }
