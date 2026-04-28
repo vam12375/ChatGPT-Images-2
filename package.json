@@ -1,0 +1,26 @@
+{
+  "name": "chatgpt-images-2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "test": "node --test --experimental-test-isolation=none",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "lucide-react": "^1.11.0",
+    "next": "latest",
+    "openai": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "typescript": "latest"
+  }
+}
