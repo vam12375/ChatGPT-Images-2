@@ -1,6 +1,7 @@
 .next
 node_modules
 .superpowers
+.local/
 .env.local
 .env*.local
 *.tsbuildinfo
