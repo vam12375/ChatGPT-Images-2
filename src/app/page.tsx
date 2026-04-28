@@ -20,7 +20,7 @@ import {
   ZoomOut
 } from "lucide-react";
 import type { FocusEvent, FormEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { formatDownloadFilename } from "@/lib/download-filename";
 import {
@@ -148,6 +148,11 @@ const formatOptions: Array<{ value: ImageOutputFormat; label: string }> = [
   { value: "jpeg", label: "JPEG" }
 ];
 
+const defaultSize: ImageSize = "1024x1024";
+const defaultQuality: ImageQuality = "medium";
+const defaultOutputFormat: ImageOutputFormat = "png";
+const defaultCount = 1;
+
 function createSessionId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
@@ -172,11 +177,14 @@ function downloadImage(
 
 export default function HomePage() {
   const [prompt, setPrompt] = useState<string>(examplePrompts[0].value);
-  const [size, setSize] = useState<ImageSize>("1024x1024");
+  const [size, setSize] = useState<ImageSize>(defaultSize);
   const [isSizeMenuOpen, setIsSizeMenuOpen] = useState(false);
-  const [quality, setQuality] = useState<ImageQuality>("medium");
-  const [outputFormat, setOutputFormat] = useState<ImageOutputFormat>("png");
-  const [count, setCount] = useState(1);
+  const [isRailCollapsed, setIsRailCollapsed] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [quality, setQuality] = useState<ImageQuality>(defaultQuality);
+  const [outputFormat, setOutputFormat] = useState<ImageOutputFormat>(defaultOutputFormat);
+  const [count, setCount] = useState(defaultCount);
   const [images, setImages] = useState<GeneratedImage[]>([]);
   const [model, setModel] = useState("");
   const [usage, setUsage] = useState<Usage | null>(null);
@@ -186,7 +194,9 @@ export default function HomePage() {
   const [activeSessionId, setActiveSessionId] = useState("");
   const [viewerImage, setViewerImage] = useState<ViewerImage | null>(null);
   const [viewerZoom, setViewerZoom] = useState(DEFAULT_IMAGE_VIEWER_ZOOM);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
+  const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase("zh-CN");
   const selectedSize = useMemo(
     () => sizeOptions.find((option) => option.value === size) ?? sizeOptions[0],
     [size]
@@ -198,6 +208,35 @@ export default function HomePage() {
       null,
     [activeSessionId, sessions]
   );
+  const filteredSessions = useMemo(() => {
+    if (!normalizedSearchQuery) {
+      return sessions;
+    }
+
+    return sessions.filter((session) =>
+      [
+        session.title,
+        session.prompt,
+        session.sizeLabel,
+        session.sizeValue,
+        session.qualityLabel,
+        session.createdAt
+      ].some((item) => item.toLocaleLowerCase("zh-CN").includes(normalizedSearchQuery))
+    );
+  }, [normalizedSearchQuery, sessions]);
+  const filteredPlaceholders = useMemo(() => {
+    if (!normalizedSearchQuery) {
+      return recentPlaceholders;
+    }
+
+    return recentPlaceholders.filter((item) =>
+      item.toLocaleLowerCase("zh-CN").includes(normalizedSearchQuery)
+    );
+  }, [normalizedSearchQuery]);
+  const visibleSessions = isSearchOpen ? filteredSessions : sessions;
+  const visiblePlaceholders = isSearchOpen
+    ? filteredPlaceholders
+    : recentPlaceholders;
   const sizeDisplayLabel = `${selectedSize.label} ${selectedSize.ratio}`;
   const sizeDisplayValue = `${selectedSize.ratio} · ${selectedSize.dimensions}`;
   const qualityLabel =
@@ -213,6 +252,14 @@ export default function HomePage() {
       prompt.trim().length > 0 && size.trim().length > 0 && !isGenerating,
     [prompt, size, isGenerating]
   );
+
+  useEffect(() => {
+    if (!isSearchOpen || isRailCollapsed) {
+      return;
+    }
+
+    searchInputRef.current?.focus();
+  }, [isRailCollapsed, isSearchOpen]);
 
   useEffect(() => {
     let isMounted = true;
@@ -276,6 +323,51 @@ export default function HomePage() {
     setIsSizeMenuOpen(false);
   }
 
+  function handleToggleRail(): void {
+    const shouldCollapse = !isRailCollapsed;
+
+    setIsRailCollapsed(shouldCollapse);
+
+    if (shouldCollapse) {
+      setIsSearchOpen(false);
+      setSearchQuery("");
+    }
+  }
+
+  function handleNewChat(): void {
+    setActiveSessionId("");
+    setPrompt("");
+    setImages([]);
+    setModel("");
+    setUsage(null);
+    setError("");
+    setViewerImage(null);
+    setViewerZoom(DEFAULT_IMAGE_VIEWER_ZOOM);
+    setSize(defaultSize);
+    setQuality(defaultQuality);
+    setOutputFormat(defaultOutputFormat);
+    setCount(defaultCount);
+    setIsSizeMenuOpen(false);
+    setIsSearchOpen(false);
+    setSearchQuery("");
+  }
+
+  function handleToggleSearch(): void {
+    if (isSearchOpen) {
+      setIsSearchOpen(false);
+      setSearchQuery("");
+      return;
+    }
+
+    setIsRailCollapsed(false);
+    setIsSearchOpen(true);
+  }
+
+  function handleClearSearch(): void {
+    setSearchQuery("");
+    searchInputRef.current?.focus();
+  }
+
   function handleSelectSession(session: GenerationSession): void {
     setActiveSessionId(session.id);
     setPrompt(session.prompt);
@@ -285,6 +377,8 @@ export default function HomePage() {
     setOutputFormat(session.outputFormat);
     setCount(session.count);
     setSize(readSelectableSize(session.size));
+    setIsSearchOpen(false);
+    setSearchQuery("");
   }
 
   function openViewer(
@@ -376,33 +470,80 @@ export default function HomePage() {
   }
 
   return (
-    <main className="workspace-shell">
-      <aside className="history-rail" aria-label="最近聊天">
+    <main className={`workspace-shell${isRailCollapsed ? " is-rail-collapsed" : ""}`}>
+      <aside
+        className={`history-rail${isRailCollapsed ? " is-collapsed" : ""}`}
+        aria-label="最近聊天"
+      >
         <div className="rail-topbar">
           <span className="rail-logo" aria-hidden="true">
             <WandSparkles size={18} />
           </span>
-          <button className="icon-button" type="button" aria-label="折叠侧栏">
+          <button
+            className="icon-button rail-collapse-button"
+            type="button"
+            aria-label={isRailCollapsed ? "展开侧栏" : "折叠侧栏"}
+            aria-pressed={isRailCollapsed}
+            onClick={handleToggleRail}
+          >
             <PanelLeft size={18} />
           </button>
         </div>
 
         <nav className="rail-actions" aria-label="快捷入口">
-          <button type="button">
+          <button
+            type="button"
+            aria-label="新聊天"
+            disabled={isGenerating}
+            title="新聊天"
+            onClick={handleNewChat}
+          >
             <MessageSquarePlus size={18} />
-            新聊天
+            <span>新聊天</span>
           </button>
-          <button type="button">
+          <button
+            className={isSearchOpen ? "is-active" : ""}
+            type="button"
+            aria-label={isSearchOpen ? "关闭搜索聊天" : "搜索聊天"}
+            aria-expanded={isSearchOpen}
+            title="搜索聊天"
+            onClick={handleToggleSearch}
+          >
             <Search size={18} />
-            搜索聊天
+            <span>搜索聊天</span>
           </button>
         </nav>
 
+        {isSearchOpen ? (
+          <div className="rail-search" role="search">
+            <Search size={15} aria-hidden="true" />
+            <input
+              ref={searchInputRef}
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="搜索标题或提示词"
+              aria-label="搜索聊天记录"
+            />
+            {searchQuery ? (
+              <button
+                className="search-clear"
+                type="button"
+                aria-label="清空搜索"
+                onClick={handleClearSearch}
+              >
+                <X size={14} />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
         <div className="recent-section">
-          <p>最近</p>
-          <div className="recent-list">
-            {sessions.length > 0
-              ? sessions.map((session) => (
+          <p>{isSearchOpen ? "搜索结果" : "最近"}</p>
+          <div className="recent-list" aria-live="polite">
+            {sessions.length > 0 ? (
+              visibleSessions.length > 0 ? (
+                visibleSessions.map((session) => (
                   <button
                     className={session.id === activeSession?.id ? "is-active" : ""}
                     key={session.id}
@@ -413,24 +554,25 @@ export default function HomePage() {
                     <small>{session.createdAt}</small>
                   </button>
                 ))
-              : recentPlaceholders.map((item, index) => (
-                  <button
-                    className={index === 0 ? "is-active" : ""}
-                    key={item}
-                    type="button"
-                    onClick={() => setPrompt(examplePrompts[index % examplePrompts.length].value)}
-                  >
-                    <span>{item}</span>
-                  </button>
-                ))}
-          </div>
-        </div>
-
-        <div className="account-card">
-          <span>GL</span>
-          <div>
-            <strong>green lemon</strong>
-            <small>Plus</small>
+              ) : (
+                <div className="recent-empty">没有找到匹配的聊天记录。</div>
+              )
+            ) : visiblePlaceholders.length > 0 ? (
+              visiblePlaceholders.map((item, index) => (
+                <button
+                  className={!isSearchOpen && index === 0 ? "is-active" : ""}
+                  key={item}
+                  type="button"
+                  onClick={() =>
+                    setPrompt(examplePrompts[index % examplePrompts.length].value)
+                  }
+                >
+                  <span>{item}</span>
+                </button>
+              ))
+            ) : (
+              <div className="recent-empty">没有找到匹配的聊天记录。</div>
+            )}
           </div>
         </div>
       </aside>
