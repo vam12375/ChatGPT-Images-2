@@ -54,6 +54,10 @@ function readApiMode(value: unknown): GenerationApiMode {
   return value === "responses" ? "responses" : "images";
 }
 
+function readOperation(value: unknown): StoredGenerationSession["operation"] {
+  return value === "edit" ? "edit" : "generate";
+}
+
 function readUsage(value: unknown): GenerationUsage | null {
   if (!isRecord(value)) {
     return null;
@@ -114,6 +118,13 @@ function readSession(value: unknown): StoredGenerationSession | null {
     id,
     title: readString(value.title) || "未命名图片",
     prompt,
+    operation: readOperation(value.operation),
+    sourceImageId: readString(value.sourceImageId) || undefined,
+    referenceImageCount:
+      readNumber(value.referenceImageCount) > 0
+        ? readNumber(value.referenceImageCount)
+        : undefined,
+    usedMask: typeof value.usedMask === "boolean" ? value.usedMask : undefined,
     size: size as ImageSize,
     sizeLabel: readString(value.sizeLabel),
     sizeValue: readString(value.sizeValue),

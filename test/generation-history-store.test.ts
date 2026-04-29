@@ -16,6 +16,7 @@ function createSession(dataUrl: string): StoredGenerationSession {
     id: "session-1",
     title: "茶饮海报",
     prompt: "生成一张茶饮海报",
+    operation: "generate",
     size: "1024x1024",
     sizeLabel: "Square 1:1",
     sizeValue: "1024 x 1024",
@@ -65,4 +66,21 @@ test("读取旧历史时会顺手瘦身，兼容已存在的 base64 记录", asy
 
   assert.match(sessions[0].images[0].dataUrl, /^\/api\/generation-history\/image\?/);
   assert.equal(compactedContent.includes("iVBORw0KGgo"), false);
+});
+
+test("读取旧历史时为普通生图补齐默认操作类型", async () => {
+  const rootDir = await createTempHistoryDir();
+  const store = createGenerationHistoryStore(rootDir);
+  const legacySession = createSession("/api/generation-history/image?sessionId=1&imageId=1");
+
+  await fs.mkdir(rootDir, { recursive: true });
+  await fs.writeFile(
+    store.historyFile,
+    `${JSON.stringify([legacySession], null, 2)}\n`,
+    "utf8"
+  );
+
+  const sessions = await store.readGenerationHistory();
+
+  assert.equal(sessions[0].operation, "generate");
 });

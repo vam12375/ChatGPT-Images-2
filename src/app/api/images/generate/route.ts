@@ -101,6 +101,7 @@ export async function POST(request: Request): Promise<Response> {
       id: createSessionId(),
       title: createGenerationTitle(options.prompt),
       prompt: options.prompt,
+      operation: "generate",
       size: options.size,
       ...readHistoryMetadata(requestBody, options),
       apiMode: options.apiMode,

@@ -6,9 +6,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChatPanel } from "@/components/image-studio/ChatPanel";
 import { ControlPanel } from "@/components/image-studio/ControlPanel";
 import { HistoryRail } from "@/components/image-studio/HistoryRail";
+import { ImageEditWorkspace } from "@/components/image-studio/ImageEditWorkspace";
 import { ImageViewer } from "@/components/image-studio/ImageViewer";
 import type {
   GeneratedImage,
+  ImageEditTarget,
   GenerationSession,
   SizeOption,
   Usage,
@@ -192,6 +194,7 @@ export default function HomePage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [sessions, setSessions] = useState<GenerationSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
+  const [editTarget, setEditTarget] = useState<ImageEditTarget | null>(null);
   const [viewerImage, setViewerImage] = useState<ViewerImage | null>(null);
   const [viewerZoom, setViewerZoom] = useState(DEFAULT_IMAGE_VIEWER_ZOOM);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -253,12 +256,19 @@ export default function HomePage() {
   const currentUsage = activeSession?.usage ?? usage;
   const generationHint = `会追加：Make the aspect ratio ${selectedSize.ratio}；提交尺寸：${selectedSize.dimensions}。`;
   const currentResultPills = activeSession
-    ? [
-        readApiModeLabel(activeSession.apiMode),
-        activeSession.sizeLabel,
-        activeSession.qualityLabel,
-        `${activeSession.count} 张`
-      ]
+    ? activeSession.operation === "edit"
+      ? [
+          "图片编辑",
+          activeSession.sizeLabel,
+          activeSession.usedMask ? "局部重绘" : "整图编辑",
+          activeSession.outputFormat.toUpperCase()
+        ]
+      : [
+          readApiModeLabel(activeSession.apiMode),
+          activeSession.sizeLabel,
+          activeSession.qualityLabel,
+          `${activeSession.count} 张`
+        ]
     : [currentApiModeLabel, sizeDisplayLabel, qualityLabel, `${count} 张`];
 
   const canGenerate = useMemo(
@@ -358,6 +368,7 @@ export default function HomePage() {
     setModel("");
     setUsage(null);
     setError("");
+    setEditTarget(null);
     setViewerImage(null);
     setViewerZoom(DEFAULT_IMAGE_VIEWER_ZOOM);
     setAspectRatio(defaultAspectRatio);
@@ -417,8 +428,47 @@ export default function HomePage() {
     setViewerZoom(DEFAULT_IMAGE_VIEWER_ZOOM);
   }
 
+  function openImageEditor(
+    image: GeneratedImage,
+    imageIndex: number,
+    session: GenerationSession
+  ): void {
+    setViewerImage(null);
+    setEditTarget({
+      image,
+      imageIndex,
+      session
+    });
+  }
+
   function changeViewerZoom(delta: number): void {
     setViewerZoom((currentZoom) => clampImageViewerZoom(currentZoom + delta));
+  }
+
+  function applySession(session: GenerationSession): void {
+    setImages(session.images);
+    setModel(session.model);
+    setUsage(session.usage);
+    setActiveSessionId(session.id);
+    setPrompt(session.prompt);
+    setApiMode(session.apiMode);
+    setOutputFormat(session.outputFormat);
+    setCount(session.count);
+    setAspectRatio(readSelectableAspectRatio(session));
+  }
+
+  function handleEditComplete(session: GenerationSession): void {
+    applySession(session);
+    setSessions((currentSessions) => [session, ...currentSessions].slice(0, 12));
+
+    const nextImage = session.images[0];
+    if (nextImage) {
+      setEditTarget({
+        image: nextImage,
+        imageIndex: 0,
+        session
+      });
+    }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -457,6 +507,7 @@ export default function HomePage() {
         id: createSessionId(),
         title: createGenerationTitle(prompt),
         prompt: prompt.trim(),
+        operation: "generate",
         size,
         sizeLabel: sizeDisplayLabel,
         sizeValue: sizeDisplayValue,
@@ -473,10 +524,7 @@ export default function HomePage() {
         })
       };
 
-      setImages(nextImages);
-      setModel(nextModel);
-      setUsage(nextUsage);
-      setActiveSessionId(nextSession.id);
+      applySession(nextSession);
       // 只保留最近 12 条，保持侧边栏轻量且不引入持久化复杂度。
       setSessions((currentSessions) => [nextSession, ...currentSessions].slice(0, 12));
     } catch (generationError) {
@@ -488,6 +536,17 @@ export default function HomePage() {
     } finally {
       setIsGenerating(false);
     }
+  }
+
+  if (editTarget) {
+    return (
+      <ImageEditWorkspace
+        target={editTarget}
+        onClose={() => setEditTarget(null)}
+        onDownloadImage={downloadImage}
+        onEditComplete={handleEditComplete}
+      />
+    );
   }
 
   return (
@@ -550,6 +609,7 @@ export default function HomePage() {
         isGenerating={isGenerating}
         prompt={prompt}
         onDownloadImage={downloadImage}
+        onEditImage={openImageEditor}
         onOpenViewer={openViewer}
       />
 

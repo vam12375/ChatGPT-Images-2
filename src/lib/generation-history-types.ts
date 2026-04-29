@@ -20,6 +20,10 @@ export type StoredGenerationSession = {
   id: string;
   title: string;
   prompt: string;
+  operation: "generate" | "edit";
+  sourceImageId?: string;
+  referenceImageCount?: number;
+  usedMask?: boolean;
   size: ImageSize;
   sizeLabel: string;
   sizeValue: string;

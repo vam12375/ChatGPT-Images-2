@@ -3,6 +3,7 @@ import {
   Download,
   Maximize2,
   MoreHorizontal,
+  Pencil,
   WandSparkles
 } from "lucide-react";
 
@@ -22,6 +23,11 @@ type ChatPanelProps = {
     index: number,
     outputFormat: GenerationSession["outputFormat"]
   ) => void;
+  onEditImage: (
+    image: GeneratedImage,
+    index: number,
+    session: GenerationSession
+  ) => void;
   onOpenViewer: (
     image: GeneratedImage,
     index: number,
@@ -39,6 +45,7 @@ export function ChatPanel({
   isGenerating,
   prompt,
   onDownloadImage,
+  onEditImage,
   onOpenViewer
 }: ChatPanelProps) {
   return (
@@ -104,19 +111,28 @@ export function ChatPanel({
                     </button>
                     <figcaption>
                       <span>{activeSession.createdAt}</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onDownloadImage(
-                            image.dataUrl,
-                            index,
-                            activeSession.outputFormat
-                          )
-                        }
-                      >
-                        <Download size={15} />
-                        下载
-                      </button>
+                      <div className="generated-card-actions">
+                        <button
+                          type="button"
+                          onClick={() => onEditImage(image, index, activeSession)}
+                        >
+                          <Pencil size={15} />
+                          编辑
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onDownloadImage(
+                              image.dataUrl,
+                              index,
+                              activeSession.outputFormat
+                            )
+                          }
+                        >
+                          <Download size={15} />
+                          下载
+                        </button>
+                      </div>
                     </figcaption>
                   </figure>
                 ))}

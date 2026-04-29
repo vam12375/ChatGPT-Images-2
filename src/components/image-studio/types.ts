@@ -17,6 +17,12 @@ export type ViewerImage = {
   outputFormat: ImageOutputFormat;
 };
 
+export type ImageEditTarget = {
+  image: GeneratedImage;
+  imageIndex: number;
+  session: GenerationSession;
+};
+
 export type SizeOption = {
   value: ImageAspectRatio;
   apiSize: ImageSize;
