@@ -16,6 +16,9 @@ OPENAI_API_KEYS=sk-proj-key1,sk-proj-key2,sk-proj-key3
 # 模型配置
 OPENAI_IMAGE_MODEL=gpt-image-2
 
+# 可选：中转 API 地址，图片编辑会请求 /images/edits
+OPENAI_BASE_URL=https://api.apiyi.com/v1
+
 # 启用代理功能
 ENABLE_PROXY_CACHE=true
 PROXY_CACHE_DURATION=3600
@@ -52,6 +55,24 @@ curl -X POST http://localhost:3000/api/images/generate \
   }'
 ```
 
+#### 编辑图片
+
+前端页面生成图片后，点击结果卡片下方的“编辑”即可进入全屏图片编辑工作区。只输入文字会执行整图编辑；用画笔涂抹后提交，会把涂抹区域导出为 PNG mask 并执行局部重绘。
+
+mask 规则：涂抹区域为透明像素，未涂抹区域为不透明像素。
+
+接口也可以直接用 `multipart/form-data` 调用：
+
+```bash
+curl -X POST http://localhost:3000/api/images/edit \
+  -F "prompt=把天空改成粉色晚霞" \
+  -F "size=1024x1024" \
+  -F "quality=high" \
+  -F "output_format=png" \
+  -F "background=auto" \
+  -F "image[]=@source.png"
+```
+
 #### 查看统计信息
 ```bash
 curl http://localhost:3000/api/proxy/stats \
@@ -82,6 +103,7 @@ npm test
 | **监控统计** | 使用访问令牌查看代理运行状态和性能 |
 | **本地限流** | 默认每个客户端每分钟最多10次生成请求 |
 | **请求日志** | 记录最近100条请求用于调试 |
+| **图片编辑** | 支持 `gpt-image-2` multipart 编辑接口和画笔 mask |
 
 ## 工作流程图
 
@@ -112,6 +134,12 @@ ENABLE_PROXY_CACHE=false
 - 1024x1024
 - 1536x1024
 - 1024x1536
+
+**Q: 图片编辑支持透明背景吗？**
+不支持。编辑接口只允许 `background=auto` 或 `background=opaque`，避免把模型会拒绝的透明背景参数发到上游。
+
+**Q: 局部编辑的 mask 为什么要透明？**
+上游编辑接口用透明像素表示需要重绘的区域，不透明像素表示保留原图。页面中的蓝色涂抹只是交互反馈，真正提交的是透明/不透明 alpha mask。
 
 **Q: 如何检查反向代理是否正常工作？**
 访问 `http://localhost:3000/api/proxy/stats` 查看实时统计信息。

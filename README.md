@@ -2,7 +2,7 @@
 
 一个基于 Next.js App Router、React、TypeScript 和 OpenAI Images API 的图片生成工作台。
 
-项目提供接近 ChatGPT 图片工作台的三栏式交互界面，支持画幅选择、质量与格式控制、最近记录持久化、聊天记录搜索、图片缩放查看、图片下载，以及带缓存与监控能力的服务端代理接口。
+项目提供接近 ChatGPT 图片工作台的三栏式交互界面，支持画幅选择、质量与格式控制、全屏图片编辑、画笔局部 mask、最近记录持久化、聊天记录搜索、图片缩放查看、图片下载，以及带缓存与监控能力的服务端代理接口。
 
 ## 界面预览
 
@@ -30,7 +30,7 @@
 
 - 左侧为最近记录栏，支持折叠侧栏、搜索聊天、新建聊天。
 - 中间为参数控制区，集中管理提示词、画幅、质量、格式和数量。
-- 右侧为聊天式结果区，展示提示词、参数标签、图片结果和下载入口。
+- 右侧为聊天式结果区，展示提示词、参数标签、图片结果、编辑入口和下载入口。
 
 ### 2. 适合图片生成的参数控制
 
@@ -53,7 +53,15 @@
 - 点击图片可进入大图查看器。
 - 查看器支持放大、缩小、重置缩放和下载。
 
-### 5. 服务端代理能力
+### 5. 图片编辑能力
+
+- 生成结果卡片提供“编辑”入口，可进入专注的全屏编辑工作区。
+- 支持只输入文字执行整图编辑。
+- 支持用画笔涂抹局部区域，浏览器会导出 API 兼容的 PNG mask。
+- mask 规则为：已涂抹像素透明、未涂抹像素不透明，符合局部重绘接口要求。
+- 编辑结果会回填到聊天结果区和最近记录，并可继续作为下一轮编辑源图。
+
+### 6. 服务端代理能力
 
 - 支持单密钥或多密钥轮转。
 - 支持请求缓存，减少重复调用成本。
@@ -62,7 +70,7 @@
 - 代理统计接口需要 `PROXY_ADMIN_TOKEN` 访问令牌。
 - 支持自定义 `OPENAI_BASE_URL` 对接中转服务。
 
-### 6. 中文化交互与错误提示
+### 7. 中文化交互与错误提示
 
 - 前端交互文案为中文。
 - 请求参数错误会返回中文提示。
@@ -101,12 +109,16 @@
 │  │  └─ api/
 │  │     ├─ generation-history/image/route.ts
 │  │     ├─ generation-history/route.ts
+│  │     ├─ images/edit/route.ts
 │  │     ├─ images/generate/route.ts
 │  │     └─ proxy/stats/route.ts
 │  ├─ components/image-studio/
 │  │  ├─ ChatPanel.tsx
 │  │  ├─ ControlPanel.tsx
+│  │  ├─ EditComposer.tsx
+│  │  ├─ EditImageStage.tsx
 │  │  ├─ HistoryRail.tsx
+│  │  ├─ ImageEditWorkspace.tsx
 │  │  ├─ ImageViewer.tsx
 │  │  └─ types.ts
 │  └─ lib/
@@ -115,6 +127,9 @@
 │     ├─ generation-history.ts
 │     ├─ generation-history-store.ts
 │     ├─ generation-history-types.ts
+│     ├─ image-edit-mask.ts
+│     ├─ image-edit-options.ts
+│     ├─ image-edit-proxy.ts
 │     ├─ image-options.ts
 │     ├─ openai-retry.ts
 │     ├─ openai-error.ts
@@ -126,6 +141,9 @@
    ├─ download-filename.test.ts
    ├─ generation-history-store.test.ts
    ├─ generation-history.test.ts
+   ├─ image-edit-mask.test.ts
+   ├─ image-edit-options.test.ts
+   ├─ image-edit-proxy.test.ts
    ├─ image-options.test.ts
    ├─ openai-error.test.ts
    └─ proxy.test.ts
@@ -277,7 +295,18 @@ npm test
 - **搜索聊天**：按标题、提示词、画幅、质量、时间搜索最近记录。
 - **折叠侧栏**：收起左侧栏，扩大中间与右侧展示空间。
 
-### 5. 大图查看
+### 5. 编辑图片
+
+生成成功后，点击图片卡片下方的“编辑”进入全屏编辑工作区：
+
+- 直接输入编辑指令并提交，会执行整图编辑。
+- 拖动画笔涂抹局部区域后提交，会把涂抹区域作为需要重绘的 mask。
+- 顶部工具栏支持撤销、重做、清除涂抹和下载当前源图。
+- 编辑成功后会生成一条“图片编辑”历史记录，并把新图作为可继续编辑的源图。
+
+画笔 mask 会在浏览器端导出为与源图同尺寸的 PNG：涂抹区域为透明像素，未涂抹区域为不透明像素。
+
+### 6. 大图查看
 
 点击结果图可打开查看器，支持：
 
@@ -389,7 +418,28 @@ Content-Type: application/json
 }
 ```
 
-### 2. 获取最近记录
+### 2. 编辑图片
+
+```http
+POST /api/images/edit
+Content-Type: multipart/form-data
+```
+
+请求字段：
+
+| 字段 | 是否必需 | 说明 |
+| --- | --- | --- |
+| `prompt` | 是 | 图片编辑指令。 |
+| `image[]` | 是 | 要编辑的源图，初版 UI 使用单张源图。 |
+| `mask` | 否 | 画笔涂抹导出的 PNG mask。 |
+| `size` | 否 | `1024x1024`、`1536x1024`、`1024x1536`，默认 `1024x1024`。 |
+| `quality` | 否 | 默认 `high`。 |
+| `output_format` | 否 | `png`、`jpeg`、`webp`，默认 `png`。 |
+| `background` | 否 | 仅支持 `auto` 或 `opaque`，不发送 `transparent`。 |
+
+服务端会固定转发 `model=gpt-image-2` 到 `OPENAI_BASE_URL` 的 `/images/edits`，默认兼容 API易 的 `https://api.apiyi.com/v1/images/edits`。
+
+### 3. 获取最近记录
 
 ```http
 GET /api/generation-history
@@ -404,6 +454,7 @@ GET /api/generation-history
       "id": "1714310400000-uuid",
       "title": "茶饮海报设计",
       "prompt": "高级茶饮品牌海报，白瓷杯、柔和自然光、干净背景，适合电商首图",
+      "operation": "generate",
       "size": "1024x1024",
       "sizeLabel": "Square 1:1",
       "sizeValue": "1:1 · 1024 x 1024",
@@ -425,7 +476,7 @@ GET /api/generation-history
 }
 ```
 
-### 3. 查看代理统计
+### 4. 查看代理统计
 
 ```http
 GET /api/proxy/stats
@@ -439,7 +490,7 @@ Authorization: Bearer <PROXY_ADMIN_TOKEN>
 - 缓存统计
 - 最近请求日志
 
-### 4. 清空代理缓存
+### 5. 清空代理缓存
 
 ```http
 POST /api/proxy/stats
@@ -475,9 +526,9 @@ Authorization: Bearer <PROXY_ADMIN_TOKEN>
 
 - 保存位置：项目根目录下的 `.local/generation-history.json`
 - 图片文件位置：项目根目录下的 `.local/generated-images/`
-- 保存时机：每次图片生成成功后
+- 保存时机：每次图片生成或图片编辑成功后
 - 保留数量：最近 `12` 条
-- 存储内容：标题、提示词、尺寸标签、质量标签、输出格式、图片访问 URL、模型名、token 用量、创建时间
+- 存储内容：标题、提示词、操作类型、尺寸标签、质量标签、输出格式、图片访问 URL、模型名、token 用量、创建时间；编辑记录还会保存来源图片 ID、参考图数量和是否使用 mask
 - 兼容策略：读取旧版 base64 历史时会自动把图片落盘，并瘦身历史 JSON
 - 容错策略：即使保存失败，也不会阻塞图片生成主流程
 
