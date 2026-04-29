@@ -14,11 +14,18 @@ OPENAI_API_KEY=sk-proj-xxxxx
 OPENAI_API_KEYS=sk-proj-key1,sk-proj-key2,sk-proj-key3
 
 # 模型配置
-OPENAI_IMAGE_MODEL=dall-e-3
+OPENAI_IMAGE_MODEL=gpt-image-2
 
 # 启用代理功能
 ENABLE_PROXY_CACHE=true
+PROXY_CACHE_DURATION=3600
+PROXY_CACHE_MAX_ENTRIES=50
 ENABLE_REQUEST_LOG=true
+
+# 本地防滥用与监控鉴权
+IMAGE_RATE_LIMIT_MAX=10
+IMAGE_RATE_LIMIT_WINDOW_MS=60000
+PROXY_ADMIN_TOKEN=change-me
 ```
 
 ### 第2步：启动服务
@@ -47,13 +54,15 @@ curl -X POST http://localhost:3000/api/images/generate \
 
 #### 查看统计信息
 ```bash
-curl http://localhost:3000/api/proxy/stats
+curl http://localhost:3000/api/proxy/stats \
+  -H "Authorization: Bearer change-me"
 ```
 
 #### 清空缓存
 ```bash
-curl -X POST http://localhost:3000/api/proxy/clear-cache \
+curl -X POST http://localhost:3000/api/proxy/stats \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer change-me" \
   -d '{"action": "clear-cache"}'
 ```
 
@@ -69,8 +78,9 @@ npm test
 |------|------|
 | **密钥轮转** | 配置多个API密钥，自动轮转使用 |
 | **智能缓存** | 相同请求返回缓存结果，节省成本 |
-| **自动重试** | 请求失败自动重试最多3次 |
-| **监控统计** | 实时查看代理运行状态和性能 |
+| **自动重试** | 只对 429 和 5xx 自动重试最多3次 |
+| **监控统计** | 使用访问令牌查看代理运行状态和性能 |
+| **本地限流** | 默认每个客户端每分钟最多10次生成请求 |
 | **请求日志** | 记录最近100条请求用于调试 |
 
 ## 工作流程图
@@ -91,7 +101,7 @@ OPENAI_API_KEYS=sk-key-1,sk-key-2,sk-key-3
 ```
 
 **Q: 缓存会不会太占内存？**
-默认只保留最多100条请求日志，缓存会在1小时后自动清理。
+默认只保留最多100条请求日志，缓存默认最多保留50条结果，并在1小时后自动清理。
 
 **Q: 如何禁用缓存？**
 ```env

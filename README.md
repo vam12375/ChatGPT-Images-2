@@ -34,7 +34,7 @@
 
 ### 2. 适合图片生成的参数控制
 
-- 支持 5 种常用画幅比例：`1:1`、`3:4`、`9:16`、`4:3`、`16:9`。
+- 支持 5 种官网同款画幅比例：`1:1`、`3:4`、`9:16`、`4:3`、`16:9`。
 - 支持质量选项：`low`、`medium`、`high`。
 - 支持输出格式：`png`、`jpeg`、`webp`。
 - 支持单次生成 `1~4` 张图片。
@@ -44,6 +44,7 @@
 - 生成成功后会自动保存最近记录。
 - 页面刷新后可恢复最近会话。
 - 本地历史默认保留最近 `12` 条记录。
+- 完整图片会保存到 `.local/generated-images/`，历史 JSON 只保存轻量 URL，避免 base64 记录膨胀。
 - 历史记录保存在本地运行目录 `.local/` 中，不提交到 Git。
 
 ### 4. 图片预览与查看体验
@@ -56,7 +57,9 @@
 
 - 支持单密钥或多密钥轮转。
 - 支持请求缓存，减少重复调用成本。
+- 支持本地内存限流，避免误操作或脚本刷爆额度。
 - 支持最近请求日志和代理统计信息。
+- 代理统计接口需要 `PROXY_ADMIN_TOKEN` 访问令牌。
 - 支持自定义 `OPENAI_BASE_URL` 对接中转服务。
 
 ### 6. 中文化交互与错误提示
@@ -74,7 +77,7 @@
 | 语言 | TypeScript |
 | 图标 | `lucide-react` |
 | 接口调用 | `openai` |
-| 参数校验 | `zod` + 自定义约束逻辑 |
+| 参数校验 | TypeScript + 自定义约束逻辑 |
 | 运行方式 | Node.js Runtime Route Handlers |
 | 测试 | Node 内置 `node:test` |
 
@@ -96,21 +99,32 @@
 │  │  ├─ layout.tsx
 │  │  ├─ page.tsx
 │  │  └─ api/
+│  │     ├─ generation-history/image/route.ts
 │  │     ├─ generation-history/route.ts
 │  │     ├─ images/generate/route.ts
 │  │     └─ proxy/stats/route.ts
+│  ├─ components/image-studio/
+│  │  ├─ ChatPanel.tsx
+│  │  ├─ ControlPanel.tsx
+│  │  ├─ HistoryRail.tsx
+│  │  ├─ ImageViewer.tsx
+│  │  └─ types.ts
 │  └─ lib/
+│     ├─ admin-auth.ts
 │     ├─ download-filename.ts
 │     ├─ generation-history.ts
 │     ├─ generation-history-store.ts
 │     ├─ generation-history-types.ts
 │     ├─ image-options.ts
+│     ├─ openai-retry.ts
 │     ├─ openai-error.ts
 │     ├─ proxy-config.ts
 │     ├─ proxy-handler.ts
-│     └─ proxy-middleware.ts
+│     ├─ proxy-middleware.ts
+│     └─ rate-limit.ts
 └─ test/
    ├─ download-filename.test.ts
+   ├─ generation-history-store.test.ts
    ├─ generation-history.test.ts
    ├─ image-options.test.ts
    ├─ openai-error.test.ts
@@ -155,7 +169,15 @@ OPENAI_BASE_URL=
 # 代理相关
 ENABLE_PROXY_CACHE=true
 PROXY_CACHE_DURATION=3600
+PROXY_CACHE_MAX_ENTRIES=50
 ENABLE_REQUEST_LOG=true
+
+# 本地防滥用
+IMAGE_RATE_LIMIT_MAX=10
+IMAGE_RATE_LIMIT_WINDOW_MS=60000
+
+# 代理监控访问令牌
+PROXY_ADMIN_TOKEN=change-me
 ```
 
 ### 3. 启动开发服务
@@ -192,7 +214,11 @@ npm test
 | `OPENAI_BASE_URL` | 否 | 空 | 中转地址或自定义 API 地址，通常建议包含 `/v1`。 |
 | `ENABLE_PROXY_CACHE` | 否 | `true` | 是否启用代理缓存。 |
 | `PROXY_CACHE_DURATION` | 否 | `3600` | 缓存有效期，单位秒。 |
+| `PROXY_CACHE_MAX_ENTRIES` | 否 | `50` | 内存缓存最多保留的图片请求结果数量。 |
 | `ENABLE_REQUEST_LOG` | 否 | `true` | 是否记录最近请求日志。 |
+| `IMAGE_RATE_LIMIT_MAX` | 否 | `10` | 单个客户端在窗口期内最多生成请求数。 |
+| `IMAGE_RATE_LIMIT_WINDOW_MS` | 否 | `60000` | 生成接口限流窗口，单位毫秒。 |
+| `PROXY_ADMIN_TOKEN` | 是 | `change-me` | 访问 `/api/proxy/stats` 的令牌。 |
 
 > `OPENAI_API_KEY` 和 `OPENAI_API_KEYS` 至少配置一个。
 
@@ -224,15 +250,15 @@ npm test
 - 输出格式
 - 生成数量
 
-页面当前支持的体验型比例映射如下：
+页面按 ChatGPT 官网交互展示画幅比例。选择比例时，会把 `Make the aspect ratio x:y` 追加到提示词末尾；接口层仍使用稳定支持的像素尺寸：
 
-| 展示名称 | 比例 | 实际提交尺寸 |
-| --- | --- | --- |
-| Square | `1:1` | `1024x1024` |
-| Portrait | `3:4` | `1536x2048` |
-| Story | `9:16` | `1152x2048` |
-| Landscape | `4:3` | `2048x1536` |
-| Widescreen | `16:9` | `2048x1152` |
+| 展示名称 | 比例 | 实际提交尺寸 | 追加提示词 |
+| --- | --- | --- | --- |
+| Square | `1:1` | `1024x1024` | `Make the aspect ratio 1:1` |
+| Portrait | `3:4` | `1024x1536` | `Make the aspect ratio 3:4` |
+| Story | `9:16` | `1024x1536` | `Make the aspect ratio 9:16` |
+| Landscape | `4:3` | `1536x1024` | `Make the aspect ratio 4:3` |
+| Widescreen | `16:9` | `1536x1024` | `Make the aspect ratio 16:9` |
 
 ### 3. 查看结果
 
@@ -270,20 +296,8 @@ npm test
 - `1024x1024`
 - `1536x1024`
 - `1024x1536`
-- `2048x2048`
-- `2048x1152`
-- `3840x2160`
-- `2160x3840`
 
-### 自定义尺寸
-
-除了预设值之外，也支持自定义尺寸，但必须同时满足以下约束：
-
-- 格式为 `宽x高`，例如 `2048x1152`
-- 宽和高都必须是 `16` 的倍数
-- 最大边不能超过 `3840`
-- 长宽比不能超过 `3:1`
-- 总像素数必须在 `0.65MP ~ 8.3MP` 范围内
+非标准像素尺寸会直接返回参数错误；需要 3:4、9:16、4:3、16:9 这类构图比例时，请通过画幅菜单追加对应提示词。
 
 ### 质量参数
 
@@ -322,7 +336,7 @@ Content-Type: application/json
 ```json
 {
   "prompt": "未来感图片生成控制台 UI，深浅混合界面，专业产品摄影风格",
-  "size": "2048x1152",
+  "size": "1536x1024",
   "quality": "high",
   "outputFormat": "png",
   "count": 1
@@ -336,7 +350,8 @@ Content-Type: application/json
   "images": [
     {
       "id": "1714310400000-0",
-      "dataUrl": "data:image/png;base64,..."
+      "dataUrl": "/api/generation-history/image?sessionId=1714310400000-uuid&imageId=1714310400000-0",
+      "mimeType": "image/png"
     }
   ],
   "model": "gpt-image-2",
@@ -349,16 +364,17 @@ Content-Type: application/json
     "id": "1714310400000-uuid",
     "title": "未来感图片生成控制台 UI",
     "prompt": "未来感图片生成控制台 UI，深浅混合界面，专业产品摄影风格",
-    "size": "2048x1152",
-    "sizeLabel": "Widescreen 16:9",
-    "sizeValue": "16:9 · 2048 x 1152",
+    "size": "1536x1024",
+    "sizeLabel": "Landscape 3:2",
+    "sizeValue": "3:2 · 1536 x 1024",
     "qualityLabel": "高质量",
     "outputFormat": "png",
     "count": 1,
     "images": [
       {
         "id": "1714310400000-0",
-        "dataUrl": "data:image/png;base64,..."
+        "dataUrl": "/api/generation-history/image?sessionId=1714310400000-uuid&imageId=1714310400000-0",
+        "mimeType": "image/png"
       }
     ],
     "model": "gpt-image-2",
@@ -394,7 +410,13 @@ GET /api/generation-history
       "qualityLabel": "平衡",
       "outputFormat": "png",
       "count": 1,
-      "images": [],
+      "images": [
+        {
+          "id": "1714310400000-0",
+          "dataUrl": "/api/generation-history/image?sessionId=1714310400000-uuid&imageId=1714310400000-0",
+          "mimeType": "image/png"
+        }
+      ],
       "model": "gpt-image-2",
       "usage": null,
       "createdAt": "14:03"
@@ -407,6 +429,7 @@ GET /api/generation-history
 
 ```http
 GET /api/proxy/stats
+Authorization: Bearer <PROXY_ADMIN_TOKEN>
 ```
 
 响应内容包括：
@@ -421,6 +444,7 @@ GET /api/proxy/stats
 ```http
 POST /api/proxy/stats
 Content-Type: application/json
+Authorization: Bearer <PROXY_ADMIN_TOKEN>
 ```
 
 请求示例：
@@ -438,6 +462,8 @@ Content-Type: application/json
   "message": "缓存已清空",
   "cache": {
     "cacheSize": 0,
+    "maxCacheEntries": 50,
+    "maxCacheAge": 3600000,
     "requestLogSize": 0
   }
 }
@@ -448,9 +474,11 @@ Content-Type: application/json
 最近记录能力用于让页面刷新后恢复工作上下文：
 
 - 保存位置：项目根目录下的 `.local/generation-history.json`
+- 图片文件位置：项目根目录下的 `.local/generated-images/`
 - 保存时机：每次图片生成成功后
 - 保留数量：最近 `12` 条
-- 存储内容：标题、提示词、尺寸标签、质量标签、输出格式、图片结果、模型名、token 用量、创建时间
+- 存储内容：标题、提示词、尺寸标签、质量标签、输出格式、图片访问 URL、模型名、token 用量、创建时间
+- 兼容策略：读取旧版 base64 历史时会自动把图片落盘，并瘦身历史 JSON
 - 容错策略：即使保存失败，也不会阻塞图片生成主流程
 
 ## 代理能力说明
@@ -462,10 +490,19 @@ Content-Type: application/json
 ### 请求缓存
 
 启用缓存后，相同请求可复用结果，减少重复调用。
+缓存默认 1 小时过期，并最多保留 `50` 条结果；可通过 `PROXY_CACHE_DURATION` 和 `PROXY_CACHE_MAX_ENTRIES` 调整。
+
+### 请求限流
+
+生成接口默认按客户端地址限制为每分钟 `10` 次请求，避免误操作或脚本快速消耗额度。
 
 ### 请求日志
 
 代理会记录最近请求，便于调试生成失败、排查缓存命中情况和观察接口表现。
+
+### 监控鉴权
+
+`/api/proxy/stats` 需要在请求头中提供 `Authorization: Bearer <PROXY_ADMIN_TOKEN>` 或 `x-proxy-admin-token`。
 
 ### 中转地址支持
 
@@ -497,15 +534,15 @@ OPENAI_BASE_URL=https://your-proxy.example.com/v1
 - `OPENAI_BASE_URL` 是否配置错误
 - 当前模型名称是否可用
 
-### 2. 自定义尺寸提示无效
+### 2. 尺寸或画幅提示无效
 
-请确认尺寸同时满足以下条件：
+直接调用 API 时，请确认 `size` 是以下三个标准值之一：
 
-- 使用 `宽x高` 格式
-- 宽高都为 `16` 的倍数
-- 最大边不超过 `3840`
-- 长宽比不超过 `3:1`
-- 总像素在 `0.65MP ~ 8.3MP` 范围内
+- `1024x1024`
+- `1536x1024`
+- `1024x1536`
+
+页面上选择画幅比例时，会自动把 `Make the aspect ratio x:y` 写入提示词；如果手动删除了这句，模型就只会按普通提示词生成。
 
 ### 3. 历史记录没有恢复
 
