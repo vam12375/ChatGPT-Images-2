@@ -1,119 +1,119 @@
-# GPT-Image-2 Image Editing Design
+# GPT-Image-2 图片编辑功能设计
 
-## Purpose
+## 目标
 
-Add an official-style image editing flow to the existing image studio. Users should be able to edit a generated image from the result card, describe the change in natural language, optionally paint the area that should be changed, and submit the edit through the APIyi-compatible `gpt-image-2` image edits endpoint.
+在现有图片工作台中新增接近官网体验的图片编辑流程。用户可以从已生成图片进入编辑页，用自然语言描述要修改的内容，也可以用画笔涂抹局部区域，再通过兼容 API易 的 `gpt-image-2` 图片编辑接口提交修改。
 
-## Product Flow
+## 产品流程
 
-Generated image cards gain an `Edit` action near the image, similar to the official ChatGPT image UI. Selecting it opens a focused full-screen editing view instead of adding more controls to the existing left panel.
+生成结果卡片新增“编辑”入口，位置靠近图片本身，风格参考 ChatGPT 官方图片编辑 UI。点击后进入一个专注的全屏编辑视图，而不是把更多控件塞进当前左侧控制面板。
 
-The editing view contains:
+编辑视图包含：
 
-- A top toolbar with back, title, undo, redo, aspect ratio, download, and overflow actions.
-- A centered image stage that displays the selected image at a stable scale.
-- A selection mode with a brush cursor and a semi-transparent blue overlay.
-- A bottom prompt composer with placeholder text such as `Describe edit`.
-- A primary submit action that sends either whole-image editing or masked inpainting.
+- 顶部工具栏：返回、标题、撤销、重做、宽高比、下载、更多操作。
+- 中央图片舞台：以稳定比例展示当前待编辑图片。
+- 选择模式：启用画笔光标，并显示蓝色半透明涂抹遮罩。
+- 底部提示词输入框：占位文案类似“描述编辑”。
+- 主提交按钮：根据是否存在涂抹区域，提交整图编辑或 mask 局部重绘。
 
-The user can submit a text-only edit without painting. If they paint over the image, the painted area becomes the region to redraw.
+用户可以只输入文字并直接提交，此时执行整图编辑。用户如果涂抹了图片区域，涂抹区域会成为需要重绘的局部范围。
 
-## Mask Behavior
+## Mask 行为
 
-The browser creates a mask from the painted selection. The mask must match the source image dimensions and be sent as a PNG with an alpha channel.
+浏览器端根据画笔涂抹结果生成 mask。mask 必须与源图尺寸一致，并以带 alpha 通道的 PNG 发送给接口。
 
-The API expects transparent pixels to mark the redraw area and opaque pixels to mark preserved content. The editor therefore exports:
+API 要求透明像素表示要重绘的区域，不透明像素表示保留内容。因此编辑器导出的 mask 规则为：
 
-- Painted pixels: `alpha = 0`
-- Unpainted pixels: `alpha = 255`
+- 已涂抹像素：`alpha = 0`
+- 未涂抹像素：`alpha = 255`
 
-The blue overlay is only a UI affordance and is not sent as the mask image.
+界面上显示的蓝色遮罩只用于交互反馈，不会作为 mask 图片内容发送。
 
-## API Design
+## API 设计
 
-Add a new server route:
+新增服务端路由：
 
 `POST /api/images/edit`
 
-The route accepts `multipart/form-data` from the client and forwards a compatible multipart request to:
+该路由接收前端提交的 `multipart/form-data`，再转发兼容的 multipart 请求到：
 
 `POST https://api.apiyi.com/v1/images/edits`
 
-Fields:
+字段如下：
 
-- `model`: fixed to `gpt-image-2`
-- `prompt`: required edit instruction
-- `image[]`: required reference image, initially one image from the selected generated result
-- `mask`: optional PNG mask generated from brush selection
-- `size`: existing size option
-- `quality`: `high` by default
-- `output_format`: selected output format
-- `background`: `auto` or `opaque`
+- `model`：固定为 `gpt-image-2`
+- `prompt`：必填，图片编辑指令
+- `image[]`：必填，初版使用当前选中生成图作为单张参考图
+- `mask`：可选，由画笔选择区域生成的 PNG mask
+- `size`：复用现有尺寸选项
+- `quality`：默认 `high`
+- `output_format`：复用现有输出格式
+- `background`：仅允许 `auto` 或 `opaque`
 
-The route must not send `input_fidelity` because `gpt-image-2` rejects it. `background: transparent` is not offered for edits.
+路由不能发送 `input_fidelity`，因为 `gpt-image-2` 会拒绝该参数。图片编辑功能也不提供 `background: transparent`，因为接口不支持透明背景。
 
-The upstream response contains plain base64 in `data[0].b64_json`. The route converts it to a browser-ready data URL using the selected output format and returns the same shape as existing image generation responses where practical.
+上游响应中的 `data[0].b64_json` 是纯 base64。路由需要根据所选输出格式转换为浏览器可直接展示的 data URL，并尽量复用现有图片生成响应结构。
 
-## Data And History
+## 数据与历史记录
 
-Extend stored sessions with a lightweight operation type so the UI can distinguish generated images from edited images:
+扩展历史记录会话，增加轻量操作类型，方便 UI 区分普通生图和图片编辑：
 
 - `operation: "generate" | "edit"`
-- `sourceImageId` for edited sessions when available
-- `referenceImageCount` for future multi-image editing support
+- `sourceImageId`：编辑会话可记录来源图片 ID
+- `referenceImageCount`：为后续多图融合编辑保留
 
-Edited results appear in the existing chat/result area and history rail. The result pills should show `Image edit`, size, quality, format, and whether a mask was used.
+编辑结果继续展示在现有聊天结果区和历史栏中。结果标签显示“图片编辑”、尺寸、质量、格式，以及是否使用了 mask。
 
-The edited output can be used as the next source image, enabling multi-round refinement.
+编辑结果可以继续作为下一轮编辑的源图，支持多轮精修。
 
-## Component Boundaries
+## 组件边界
 
-Keep the editor in focused components:
+编辑能力拆分为聚焦组件和工具函数：
 
-- `ImageEditWorkspace`: full-screen editing shell and state orchestration.
-- `EditImageStage`: image display, pointer handling, and selection overlay.
-- `EditComposer`: prompt input and submit action.
-- `image-edit-mask` helper: converts brush strokes into an API-compatible mask blob.
-- `image-edit-options` helper: validates server-side edit fields and file constraints.
+- `ImageEditWorkspace`：全屏编辑壳层与状态编排。
+- `EditImageStage`：图片展示、指针事件处理、涂抹遮罩展示。
+- `EditComposer`：编辑提示词输入与提交按钮。
+- `image-edit-mask`：把画笔涂抹结果转换成 API 兼容 mask blob。
+- `image-edit-options`：服务端校验编辑字段与文件约束。
 
-The existing generation form remains responsible for text-to-image generation only.
+现有生成表单仍只负责文生图，不承担图片编辑状态。
 
-## Validation And Errors
+## 校验与错误处理
 
-Client-side validation:
+客户端校验：
 
-- Prompt is required.
-- An editable source image is required.
-- Mask submission is optional.
-- Brush tools are disabled until the source image has loaded.
+- 编辑提示词不能为空。
+- 必须存在可编辑的源图。
+- mask 可选。
+- 源图加载完成前禁用画笔工具。
 
-Server-side validation:
+服务端校验：
 
-- Prompt must be non-empty.
-- At least one `image[]` file is required.
-- Maximum 16 reference images.
-- Accepted image formats: PNG, JPEG, WebP.
-- Mask, when present, must be an image file and is forwarded only for the first image.
-- Output compression is allowed only for JPEG/WebP.
+- `prompt` 必须非空。
+- 至少需要一个 `image[]` 文件。
+- 最多支持 16 张参考图。
+- 参考图格式限制为 PNG、JPEG、WebP。
+- 如果提供 mask，mask 必须是图片文件，并且只作用于第一张参考图。
+- `output_compression` 仅允许 JPEG/WebP 使用。
 
-User-facing errors should follow the current Chinese error style and avoid exposing raw SDK objects.
+用户可见错误沿用当前中文错误风格，避免直接暴露 SDK 原始错误对象。
 
-## Testing
+## 测试
 
-Add tests for:
+新增测试覆盖：
 
-- Edit option parsing and defaults.
-- Rejection of empty prompt and missing image.
-- Maximum image count enforcement.
-- Multipart forwarding field names, especially repeated `image[]`.
-- Mask forwarding and no-mask whole-image editing.
-- Base64 response normalization into data URLs.
-- Existing generation behavior staying unchanged.
+- 编辑参数解析与默认值。
+- 空提示词、缺少图片时拒绝请求。
+- 参考图数量上限。
+- multipart 转发字段名，尤其是重复的 `image[]`。
+- 有 mask 与无 mask 的编辑请求。
+- base64 响应归一化为 data URL。
+- 现有文生图行为不受影响。
 
-Manual browser verification should cover:
+手动浏览器验证覆盖：
 
-- Edit button opens the full-screen editor from a generated result.
-- Text-only edit can submit.
-- Brush painting draws the blue overlay.
-- The exported mask uses transparent painted pixels.
-- Edited result appears in the result view/history and can be downloaded.
+- 从生成结果点击“编辑”可以进入全屏编辑页。
+- 只输入文字可以提交整图编辑。
+- 画笔涂抹会显示蓝色遮罩。
+- 导出的 mask 中涂抹区域为透明像素。
+- 编辑结果出现在结果区和历史记录中，并且可以下载。
