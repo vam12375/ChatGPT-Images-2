@@ -1,15 +1,16 @@
 /**
  * 反向代理 API 处理器：统一封装 OpenAI 调用、重试、缓存和响应归一化。
  */
+import type { GenerationUsage } from "@/lib/generation-history-types";
+import {
+  buildOpenAIImageRequest,
+  type ImageOutputFormat,
+  type ImageRequestOptions,
+  type OpenAIImagePayload
+} from "@/lib/image-options";
+import { callOpenAIWithRetry } from "@/lib/openai-retry";
 import { proxyConfig } from "@/lib/proxy-config";
 import { proxyMiddleware } from "@/lib/proxy-middleware";
-
-import type {
-  ImageOutputFormat,
-  ImageRequestOptions,
-  OpenAIImagePayload
-} from "@/lib/image-options";
-import type { FormattedOpenAIError } from "@/lib/openai-error";
 
 export type GeneratedImage = {
   id: string;
@@ -19,7 +20,7 @@ export type GeneratedImage = {
 export type ProxyResult = {
   images: GeneratedImage[];
   model: string;
-  usage: unknown | null;
+  usage: GenerationUsage | null;
   cached?: boolean;
 };
 
@@ -34,64 +35,109 @@ type OpenAIImageResponse = {
   usage?: unknown;
 };
 
+type OpenAIResponsesOutput = {
+  id?: string;
+  result?: string;
+  type?: string;
+};
+
+type OpenAIResponsesResponse = {
+  created_at?: number;
+  model?: string;
+  output?: OpenAIResponsesOutput[];
+  usage?: unknown;
+};
+
+type OpenAIResponsesImageTool = {
+  type: "image_generation";
+  quality?: ImageRequestOptions["quality"];
+  size?: "1024x1024" | "1024x1536" | "1536x1024";
+  output_format?: ImageOutputFormat;
+};
+
+type OpenAIResponsesPayload = {
+  input: string;
+  model: string;
+  tools: [OpenAIResponsesImageTool];
+};
+
 type OpenAIClient = {
   images: {
     generate(payload: OpenAIImagePayload): Promise<OpenAIImageResponse>;
   };
+  responses: {
+    create(payload: OpenAIResponsesPayload): Promise<OpenAIResponsesResponse>;
+  };
 };
 
-type ErrorWithStatus = {
-  status?: number;
-  message?: string;
-};
-
-function readErrorStatus(error: unknown): number | undefined {
-  return error && typeof error === "object"
-    ? (error as ErrorWithStatus).status
-    : undefined;
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
-function readErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
+function readOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readUsage(usage: unknown): GenerationUsage | null {
+  const usageRecord = asRecord(usage);
+  const totalTokens = readOptionalNumber(usageRecord.total_tokens);
+  const inputTokens =
+    readOptionalNumber(usageRecord.input_tokens) ??
+    readOptionalNumber(usageRecord.prompt_tokens);
+  const outputTokens =
+    readOptionalNumber(usageRecord.output_tokens) ??
+    readOptionalNumber(usageRecord.completion_tokens);
+
+  if (
+    totalTokens === undefined &&
+    inputTokens === undefined &&
+    outputTokens === undefined
+  ) {
+    return null;
   }
 
-  return error && typeof error === "object"
-    ? String((error as ErrorWithStatus).message || "")
-    : "";
+  return {
+    total_tokens: totalTokens,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens
+  };
 }
 
-async function callOpenAIWithRetry(
-  openaiClient: OpenAIClient,
-  payload: OpenAIImagePayload,
-  maxRetries = 3
-): Promise<OpenAIImageResponse> {
-  let lastError: unknown;
+function mergeUsages(usages: Array<GenerationUsage | null>): GenerationUsage | null {
+  const merged: GenerationUsage = {};
+  let hasValue = false;
 
-  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
-    try {
-      return await openaiClient.images.generate(payload);
-    } catch (error) {
-      lastError = error;
+  for (const usage of usages) {
+    if (!usage) {
+      continue;
+    }
 
-      // 鉴权错误重试无意义，直接交给上层格式化为用户提示。
-      const status = readErrorStatus(error);
-      if (status === 401 || status === 403) {
-        throw error;
-      }
+    if (typeof usage.total_tokens === "number") {
+      merged.total_tokens = (merged.total_tokens ?? 0) + usage.total_tokens;
+      hasValue = true;
+    }
 
-      if (attempt < maxRetries) {
-        const delayMs = 2 ** (attempt - 1) * 1000;
-        console.warn(
-          `OpenAI API 调用失败（尝试 ${attempt}/${maxRetries}），${delayMs}ms 后重试`,
-          readErrorMessage(error)
-        );
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-      }
+    if (typeof usage.input_tokens === "number") {
+      merged.input_tokens = (merged.input_tokens ?? 0) + usage.input_tokens;
+      hasValue = true;
+    }
+
+    if (typeof usage.output_tokens === "number") {
+      merged.output_tokens = (merged.output_tokens ?? 0) + usage.output_tokens;
+      hasValue = true;
     }
   }
 
-  throw lastError;
+  return hasValue ? merged : null;
+}
+
+function toBase64ImageDataUrl(
+  base64Data: string,
+  outputFormat: ImageOutputFormat
+): string {
+  return `data:image/${outputFormat};base64,${base64Data}`;
 }
 
 function toImageDataUrl(
@@ -99,7 +145,7 @@ function toImageDataUrl(
   outputFormat: ImageOutputFormat
 ): string {
   if (image.b64_json) {
-    return `data:image/${outputFormat};base64,${image.b64_json}`;
+    return toBase64ImageDataUrl(image.b64_json, outputFormat);
   }
 
   if (image.url) {
@@ -109,20 +155,136 @@ function toImageDataUrl(
   throw new Error("OpenAI 未返回图片数据");
 }
 
-export async function handleProxyRequest(
+function readResponsesSize(
+  size: string
+): "1024x1024" | "1024x1536" | "1536x1024" {
+  const match = size.toLowerCase().match(/^(\d+)x(\d+)$/);
+
+  if (!match) {
+    return "1024x1024";
+  }
+
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return "1024x1024";
+  }
+
+  if (width === height) {
+    return "1024x1024";
+  }
+
+  return width < height ? "1024x1536" : "1536x1024";
+}
+
+function buildOpenAIResponsesRequest(
   options: ImageRequestOptions,
-  buildRequestFn: (
-    options: ImageRequestOptions,
-    model: string
-  ) => OpenAIImagePayload,
-  formatErrorFn: (error: unknown) => FormattedOpenAIError
-): Promise<ProxyResult> {
-  const model = process.env.OPENAI_IMAGE_MODEL || "dall-e-3";
-  const cacheKey = proxyMiddleware.generateCacheKey(
-    options.prompt,
-    options.size,
-    model
+  model: string
+): OpenAIResponsesPayload {
+  return {
+    model,
+    input: options.prompt,
+    tools: [
+      {
+        type: "image_generation",
+        size: readResponsesSize(options.size),
+        quality: options.quality,
+        output_format: options.outputFormat
+      }
+    ]
+  };
+}
+
+function toImagesFromImageResponse(
+  response: OpenAIImageResponse,
+  outputFormat: ImageOutputFormat
+): GeneratedImage[] {
+  const images = (response.data || []).map((image, index) => ({
+    id: `${response.created || Date.now()}-${index}`,
+    dataUrl: toImageDataUrl(image, outputFormat)
+  }));
+
+  if (images.length === 0) {
+    throw new Error("OpenAI 未返回图片数据");
+  }
+
+  return images;
+}
+
+function toImagesFromResponsesResponse(
+  response: OpenAIResponsesResponse,
+  outputFormat: ImageOutputFormat,
+  responseIndex: number
+): GeneratedImage[] {
+  const imageOutputs = (response.output || []).filter(
+    (output) =>
+      output.type === "image_generation_call" &&
+      typeof output.result === "string" &&
+      output.result.length > 0
   );
+
+  if (imageOutputs.length === 0) {
+    throw new Error("OpenAI 未返回图片数据");
+  }
+
+  return imageOutputs.map((output, index) => ({
+    id: `${output.id || response.created_at || Date.now()}-${responseIndex}-${index}`,
+    dataUrl: toBase64ImageDataUrl(output.result as string, outputFormat)
+  }));
+}
+
+async function generateWithImagesApi(
+  openai: OpenAIClient,
+  options: ImageRequestOptions,
+  model: string
+): Promise<ProxyResult> {
+  const payload = buildOpenAIImageRequest(options, model);
+  const response = await callOpenAIWithRetry(() => openai.images.generate(payload));
+
+  return {
+    images: toImagesFromImageResponse(response, options.outputFormat),
+    model,
+    usage: readUsage(response.usage)
+  };
+}
+
+async function generateWithResponsesApi(
+  openai: OpenAIClient,
+  options: ImageRequestOptions,
+  model: string
+): Promise<ProxyResult> {
+  const payload = buildOpenAIResponsesRequest(options, model);
+  const responses: OpenAIResponsesResponse[] = [];
+
+  // Responses API 的 image_generation 工具按张生成，按数量逐次调用后合并结果。
+  for (let index = 0; index < options.count; index += 1) {
+    responses.push(
+      await callOpenAIWithRetry(() => openai.responses.create(payload))
+    );
+  }
+
+  return {
+    images: responses.flatMap((response, responseIndex) =>
+      toImagesFromResponsesResponse(response, options.outputFormat, responseIndex)
+    ),
+    model: responses[0]?.model || model,
+    usage: mergeUsages(responses.map((response) => readUsage(response.usage)))
+  };
+}
+
+export async function handleProxyRequest(
+  options: ImageRequestOptions
+): Promise<ProxyResult> {
+  const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
+  const responsesModel = process.env.OPENAI_RESPONSES_MODEL || "gpt-4.1-mini";
+  const activeModel = options.apiMode === "responses" ? responsesModel : imageModel;
+  const cacheKey = proxyMiddleware.generateCacheKey(options, activeModel);
 
   if (process.env.ENABLE_PROXY_CACHE === "true") {
     const cached = proxyMiddleware.getFromCache<ProxyResult>(cacheKey);
@@ -148,28 +310,14 @@ export async function handleProxyRequest(
   }
 
   const openai = new OpenAI(openaiConfig) as OpenAIClient;
+  const result =
+    options.apiMode === "responses"
+      ? await generateWithResponsesApi(openai, options, responsesModel)
+      : await generateWithImagesApi(openai, options, imageModel);
 
-  try {
-    const payload = buildRequestFn(options, model);
-    const response = await callOpenAIWithRetry(openai, payload);
-
-    const images = (response.data || []).map((image, index) => ({
-      id: `${response.created || Date.now()}-${index}`,
-      dataUrl: toImageDataUrl(image, options.outputFormat)
-    }));
-
-    const result: ProxyResult = {
-      images,
-      model,
-      usage: response.usage || null
-    };
-
-    if (process.env.ENABLE_PROXY_CACHE === "true") {
-      proxyMiddleware.setCache(cacheKey, result);
-    }
-
-    return result;
-  } catch (error) {
-    throw formatErrorFn(error);
+  if (process.env.ENABLE_PROXY_CACHE === "true") {
+    proxyMiddleware.setCache(cacheKey, result);
   }
+
+  return result;
 }

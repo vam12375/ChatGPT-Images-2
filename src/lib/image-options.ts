@@ -1,20 +1,18 @@
 export const imageSizes = [
   "1024x1024",
   "1536x1024",
-  "1024x1536",
-  "2048x2048",
-  "2048x1152",
-  "3840x2160",
-  "2160x3840"
+  "1024x1536"
 ] as const;
 
 export const imageQualities = ["low", "medium", "high"] as const;
 export const imageOutputFormats = ["png", "jpeg", "webp"] as const;
+export const generationApiModes = ["images", "responses"] as const;
 
 export type PresetImageSize = (typeof imageSizes)[number];
-export type ImageSize = PresetImageSize | `${number}x${number}`;
+export type ImageSize = PresetImageSize;
 export type ImageQuality = (typeof imageQualities)[number];
 export type ImageOutputFormat = (typeof imageOutputFormats)[number];
+export type GenerationApiMode = (typeof generationApiModes)[number];
 
 export type ImageRequestOptions = {
   prompt: string;
@@ -22,6 +20,7 @@ export type ImageRequestOptions = {
   quality: ImageQuality;
   outputFormat: ImageOutputFormat;
   count: number;
+  apiMode: GenerationApiMode;
 };
 
 export type OpenAIImagePayload = {
@@ -34,15 +33,10 @@ export type OpenAIImagePayload = {
   response_format?: "b64_json";
 };
 
-const MIN_IMAGE_PIXELS = 650_000;
-const MAX_IMAGE_PIXELS = 8_300_000;
-const MAX_IMAGE_EDGE = 3840;
-const MAX_IMAGE_ASPECT_RATIO = 3;
-const imageSizePattern = /^(\d+)x(\d+)$/;
-
 const allowedSizes = new Set<string>(imageSizes);
 const allowedQualities = new Set<string>(imageQualities);
 const allowedFormats = new Set<string>(imageOutputFormats);
+const allowedApiModes = new Set<string>(generationApiModes);
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
@@ -72,37 +66,7 @@ function readImageSize(value: unknown): ImageSize {
     return candidate as PresetImageSize;
   }
 
-  const match = candidate.match(imageSizePattern);
-  if (!match) {
-    throw new Error(
-      "尺寸格式无效。请输入如 2048x1152 的宽x高，并满足最大边 ≤ 3840、宽高为 16 的倍数、长宽比 ≤ 3:1、总像素 0.65–8.3MP。"
-    );
-  }
-
-  const width = Number(match[1]);
-  const height = Number(match[2]);
-  const longestEdge = Math.max(width, height);
-  const shortestEdge = Math.min(width, height);
-  const totalPixels = width * height;
-
-  const isValidCustomSize =
-    width > 0 &&
-    height > 0 &&
-    width % 16 === 0 &&
-    height % 16 === 0 &&
-    longestEdge <= MAX_IMAGE_EDGE &&
-    shortestEdge > 0 &&
-    longestEdge / shortestEdge <= MAX_IMAGE_ASPECT_RATIO &&
-    totalPixels >= MIN_IMAGE_PIXELS &&
-    totalPixels <= MAX_IMAGE_PIXELS;
-
-  if (!isValidCustomSize) {
-    throw new Error(
-      "尺寸格式无效。请输入如 2048x1152 的宽x高，并满足最大边 ≤ 3840、宽高为 16 的倍数、长宽比 ≤ 3:1、总像素 0.65–8.3MP。"
-    );
-  }
-
-  return candidate as ImageSize;
+  throw new Error("当前仅支持 1024x1024、1536x1024、1024x1536 三种标准尺寸");
 }
 
 function readCount(value: unknown): number {
@@ -132,13 +96,14 @@ export function parseImageRequest(input: unknown): ImageRequestOptions {
   return {
     prompt,
     size: readImageSize(record.size),
-    quality: readChoice<ImageQuality>(record.quality, allowedQualities, "medium"),
+    quality: readChoice<ImageQuality>(record.quality, allowedQualities, "high"),
     outputFormat: readChoice<ImageOutputFormat>(
       record.outputFormat,
       allowedFormats,
       "png"
     ),
-    count: readCount(record.count)
+    count: readCount(record.count),
+    apiMode: readChoice<GenerationApiMode>(record.apiMode, allowedApiModes, "images")
   };
 }
 

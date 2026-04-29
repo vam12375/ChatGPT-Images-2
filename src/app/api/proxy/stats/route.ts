@@ -1,6 +1,7 @@
 /**
  * 代理监控 API：提供缓存和 Key 轮转统计，便于排查生成请求状态。
  */
+import { validateAdminRequest } from "@/lib/admin-auth";
 import { proxyConfig } from "@/lib/proxy-config";
 import { proxyMiddleware } from "@/lib/proxy-middleware";
 
@@ -14,7 +15,12 @@ function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "代理统计接口异常";
 }
 
-export async function GET(): Promise<Response> {
+export async function GET(request: Request): Promise<Response> {
+  const authError = validateAdminRequest(request);
+  if (authError) {
+    return authError;
+  }
+
   try {
     return toResponse({
       timestamp: new Date().toISOString(),
@@ -28,6 +34,11 @@ export async function GET(): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const authError = validateAdminRequest(request);
+  if (authError) {
+    return authError;
+  }
+
   try {
     const body = (await request.json()) as { action?: string };
 

@@ -12,7 +12,8 @@ test("保留合法图片生成参数并清理 prompt 空白", () => {
     size: "1024x1024",
     quality: "medium",
     outputFormat: "webp",
-    count: 2
+    count: 2,
+    apiMode: "responses"
   });
 
   assert.equal(result.prompt, "一张极简茶饮产品海报");
@@ -20,6 +21,7 @@ test("保留合法图片生成参数并清理 prompt 空白", () => {
   assert.equal(result.quality, "medium");
   assert.equal(result.outputFormat, "webp");
   assert.equal(result.count, 2);
+  assert.equal(result.apiMode, "responses");
 });
 
 test("拒绝空 prompt，避免无意义请求消耗额度", () => {
@@ -32,59 +34,52 @@ test("对未提供的可选项使用安全默认值", () => {
   });
 
   assert.equal(result.size, "1024x1024");
-  assert.equal(result.quality, "medium");
+  assert.equal(result.quality, "high");
   assert.equal(result.outputFormat, "png");
   assert.equal(result.count, 1);
+  assert.equal(result.apiMode, "images");
 });
 
-test("支持 GPT-Image-2 文档中的 2K/4K 预设尺寸", () => {
-  const horizontal = parseImageRequest({
-    prompt: "横版 2K 电商海报",
-    size: "2048x1152"
+test("只接受图片模型稳定支持的标准尺寸", () => {
+  const portrait = parseImageRequest({
+    prompt: "竖版产品海报",
+    size: "1024x1536"
   });
-  const vertical = parseImageRequest({
-    prompt: "竖版 4K 手机壁纸",
-    size: "2160x3840"
+  const landscape = parseImageRequest({
+    prompt: "横版产品海报",
+    size: "1536x1024"
   });
 
-  assert.equal(horizontal.size, "2048x1152");
-  assert.equal(vertical.size, "2160x3840");
+  assert.equal(portrait.size, "1024x1536");
+  assert.equal(landscape.size, "1536x1024");
 });
 
-test("支持满足约束的自定义尺寸并自动归一化格式", () => {
-  const result = parseImageRequest({
-    prompt: "自定义尺寸样例",
-    size: " 2304 X 1296 "
-  });
-
-  assert.equal(result.size, "2304x1296");
-});
-
-test("拒绝不满足 GPT-Image-2 尺寸约束的自定义尺寸", () => {
+test("拒绝容易被模型端自动归一化的非标准尺寸", () => {
   assert.throws(
     () =>
       parseImageRequest({
-        prompt: "非法尺寸样例",
-        size: "2050x1152"
+        prompt: "16:9 横版海报",
+        size: "2048x1152"
       }),
-    /尺寸格式无效/
+    /当前仅支持/
   );
 
   assert.throws(
     () =>
       parseImageRequest({
-        prompt: "非法比例样例",
-        size: "3840x1200"
+        prompt: "自定义尺寸样例",
+        size: "2304x1296"
       }),
-    /尺寸格式无效/
+    /当前仅支持/
   );
 });
 
-test("为 gpt-image-2 请求保留自定义尺寸与输出格式", () => {
+test("为图片生成请求保留标准尺寸与输出格式", () => {
   const result = buildOpenAIImageRequest(
     {
-      prompt: "高分辨率品牌 KV",
-      size: "2304x1296",
+      apiMode: "images",
+      prompt: "横版品牌 KV",
+      size: "1536x1024",
       quality: "high",
       outputFormat: "jpeg",
       count: 1
@@ -94,9 +89,9 @@ test("为 gpt-image-2 请求保留自定义尺寸与输出格式", () => {
 
   assert.deepEqual(result, {
     model: "gpt-image-2",
-    prompt: "高分辨率品牌 KV",
+    prompt: "横版品牌 KV",
     n: 1,
-    size: "2304x1296",
+    size: "1536x1024",
     quality: "high",
     output_format: "jpeg"
   });

@@ -1,4 +1,8 @@
-import type { ImageOutputFormat, ImageSize } from "@/lib/image-options";
+import type {
+  GenerationApiMode,
+  ImageOutputFormat,
+  ImageSize
+} from "@/lib/image-options";
 
 export type GenerationUsage = {
   total_tokens?: number;
@@ -9,6 +13,7 @@ export type GenerationUsage = {
 export type StoredGeneratedImage = {
   id: string;
   dataUrl: string;
+  mimeType?: string;
 };
 
 export type StoredGenerationSession = {
@@ -19,6 +24,7 @@ export type StoredGenerationSession = {
   sizeLabel: string;
   sizeValue: string;
   qualityLabel: string;
+  apiMode: GenerationApiMode;
   outputFormat: ImageOutputFormat;
   count: number;
   images: StoredGeneratedImage[];

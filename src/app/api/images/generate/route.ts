@@ -5,19 +5,22 @@ import {
   readGenerationHistory,
   writeGenerationHistory
 } from "@/lib/generation-history-store";
-import type {
-  GenerationUsage,
-  StoredGenerationSession
-} from "@/lib/generation-history-types";
+import type { StoredGenerationSession } from "@/lib/generation-history-types";
 import {
-  buildOpenAIImageRequest,
   type ImageRequestOptions,
   parseImageRequest
 } from "@/lib/image-options";
 import { formatOpenAIError } from "@/lib/openai-error";
 import { handleProxyRequest } from "@/lib/proxy-handler";
+import {
+  createMemoryRateLimiter,
+  readClientIdentifier,
+  readRateLimitConfig
+} from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
+
+const generationRateLimiter = createMemoryRateLimiter(readRateLimitConfig());
 
 function toErrorResponse(message: string, status = 400): Response {
   return Response.json({ error: message }, { status });
@@ -56,17 +59,32 @@ function readHistoryMetadata(
 
 async function saveSessionToHistory(
   session: StoredGenerationSession
-): Promise<void> {
+): Promise<StoredGenerationSession> {
   try {
     const currentSessions = await readGenerationHistory();
-    await writeGenerationHistory([session, ...currentSessions]);
+    const sessions = await writeGenerationHistory([session, ...currentSessions]);
+    return sessions[0] ?? session;
   } catch {
     // 最近记录是辅助能力，写入失败时不影响图片生成结果返回。
     console.warn("保存最近记录失败");
+    return session;
   }
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const rateLimit = generationRateLimiter.check(readClientIdentifier(request));
+  if (!rateLimit.allowed) {
+    return Response.json(
+      { error: "请求过于频繁，请稍后再试" },
+      {
+        headers: {
+          "Retry-After": String(Math.ceil(rateLimit.retryAfterMs / 1000))
+        },
+        status: 429
+      }
+    );
+  }
+
   let requestBody: unknown;
   let options: ImageRequestOptions;
 
@@ -78,35 +96,32 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    const result = await handleProxyRequest(
-      options,
-      buildOpenAIImageRequest,
-      formatOpenAIError
-    );
+    const result = await handleProxyRequest(options);
     const session: StoredGenerationSession = {
       id: createSessionId(),
       title: createGenerationTitle(options.prompt),
       prompt: options.prompt,
       size: options.size,
       ...readHistoryMetadata(requestBody, options),
+      apiMode: options.apiMode,
       outputFormat: options.outputFormat,
       count: options.count,
       images: result.images,
       model: result.model,
-      usage: result.usage ? (result.usage as GenerationUsage) : null,
+      usage: result.usage,
       createdAt: new Date().toLocaleTimeString("zh-CN", {
         hour: "2-digit",
         minute: "2-digit"
       })
     };
 
-    await saveSessionToHistory(session);
+    const storedSession = await saveSessionToHistory(session);
 
     return Response.json({
-      images: result.images,
-      model: result.model,
-      usage: result.usage,
-      session,
+      images: storedSession.images,
+      model: storedSession.model,
+      usage: storedSession.usage,
+      session: storedSession,
       cached: result.cached || false
     });
   } catch (error) {
