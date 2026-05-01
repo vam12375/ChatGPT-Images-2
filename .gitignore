@@ -1,11 +1,12 @@
 .next
 node_modules
 .superpowers
+.sanshu-memory/
 .local/
 .env.local
 .env*.local
 *.tsbuildinfo
 next-env.d.ts
-*.log 
+*.log
 .edge-profile/
 .worktrees/

@@ -6,8 +6,12 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "start": "next start",
     "test": "node --test --experimental-strip-types --experimental-test-isolation=none \"test/**/*.test.ts\"",
     "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.14.0"
   },
   "dependencies": {
     "lucide-react": "1.11.0",

@@ -20,13 +20,13 @@ if %errorlevel% equ 0 (
 echo.
 echo 2️⃣  检查必要文件...
 set files=^
-    src\lib\proxy-config.js^
-    src\lib\proxy-middleware.js^
-    src\lib\proxy-handler.js^
-    src\app\api\proxy\stats\route.js^
+    src\lib\proxy-config.ts^
+    src\lib\proxy-middleware.ts^
+    src\lib\proxy-handler.ts^
+    src\app\api\proxy\stats\route.ts^
     .env.local^
-    QUICKSTART.md^
-    PROXY_GUIDE.md
+    docs\QUICKSTART.md^
+    docs\PROXY_GUIDE.md
 
 for %%f in (%files%) do (
     if exist "%%f" (
@@ -58,10 +58,10 @@ echo    启动服务:
 echo    $ npm run dev
 echo.
 echo    测试反向代理:
-echo    $ curl http://localhost:3000/api/proxy/stats
+echo    $ curl http://localhost:3000/api/proxy/stats -H "Authorization: Bearer ^<PROXY_ADMIN_TOKEN^>"
 echo.
 echo    查看文档:
-echo    $ type QUICKSTART.md
+echo    $ type docs\QUICKSTART.md
 echo.
 echo ==================================
 echo ✨ 快速验证完成！
