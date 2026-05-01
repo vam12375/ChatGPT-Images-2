@@ -114,12 +114,28 @@ test("ProxyMiddleware - 请求日志", () => {
     size: "1024x1024" as const
   };
 
-  middleware.logRequest(options);
+  const entryId = middleware.logRequest(options);
 
   const logs = middleware.getRequestLog();
   assert.strictEqual(logs.length, 1);
+  assert.strictEqual(logs[0].id, entryId);
   assert.strictEqual(logs[0].prompt, options.prompt.substring(0, 50));
   assert.strictEqual(logs[0].size, "1024x1024");
+  assert.strictEqual(logs[0].status, "pending");
+});
+
+test("ProxyMiddleware - 请求日志可记录结果状态和耗时", () => {
+  const middleware = new ProxyMiddleware();
+  const entryId = middleware.logRequest({
+    prompt: "描述",
+    size: "1024x1024"
+  });
+
+  middleware.completeRequest(entryId, "success", { durationMs: 42 });
+
+  const logs = middleware.getRequestLog();
+  assert.strictEqual(logs[0].status, "success");
+  assert.strictEqual(logs[0].durationMs, 42);
 });
 
 test("ProxyMiddleware - 日志数量限制", () => {
@@ -162,6 +178,12 @@ test("RateLimiter - 优先读取代理转发的客户端地址", () => {
 });
 
 test("AdminAuth - 监控接口必须提供正确 token", () => {
+  const unsafe = validateAdminRequest(
+    new Request("http://localhost/api/proxy/stats", {
+      headers: { authorization: "Bearer change-me" }
+    }),
+    "change-me"
+  );
   const missing = validateAdminRequest(
     new Request("http://localhost/api/proxy/stats"),
     "secret"
@@ -179,6 +201,7 @@ test("AdminAuth - 监控接口必须提供正确 token", () => {
     "secret"
   );
 
+  assert.strictEqual(unsafe?.status, 403);
   assert.strictEqual(missing?.status, 401);
   assert.strictEqual(wrong?.status, 403);
   assert.strictEqual(ok, null);

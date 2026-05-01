@@ -84,3 +84,109 @@ test("读取旧历史时为普通生图补齐默认操作类型", async () => {
 
   assert.equal(sessions[0].operation, "generate");
 });
+
+test("白名单远程图片 URL 会安全拉取并落到本地文件", async () => {
+  const rootDir = await createTempHistoryDir();
+  let fetchedUrl = "";
+  let fetchedRedirect: RequestRedirect | undefined;
+  const store = createGenerationHistoryStore(rootDir, {
+    allowedRemoteImageHosts: ["images.example.com"],
+    fetchRemoteImage: (async (input, init) => {
+      fetchedUrl = String(input);
+      fetchedRedirect = init?.redirect;
+
+      return new Response(new Uint8Array([1, 2, 3]), {
+        headers: {
+          "content-length": "3",
+          "content-type": "image/webp"
+        }
+      });
+    }) as typeof fetch,
+    lookupRemoteImageHost: async () => ["203.0.113.10"]
+  });
+
+  const sessions = await store.writeGenerationHistory([
+    createSession("https://images.example.com/result.webp")
+  ]);
+  const imageFile = await store.readStoredImageFile("session-1", "image-1");
+
+  assert.equal(fetchedUrl, "https://images.example.com/result.webp");
+  assert.equal(fetchedRedirect, "error");
+  assert.match(sessions[0].images[0].dataUrl, /^\/api\/generation-history\/image\?/);
+  assert.equal(imageFile.mimeType, "image/webp");
+  assert.deepEqual([...imageFile.bytes], [1, 2, 3]);
+});
+
+test("未配置远程图片白名单时保留原 URL 且不发起拉取", async () => {
+  const rootDir = await createTempHistoryDir();
+  let wasFetched = false;
+  const store = createGenerationHistoryStore(rootDir, {
+    fetchRemoteImage: (async () => {
+      wasFetched = true;
+      return new Response(new Uint8Array([1]), {
+        headers: { "content-type": "image/png" }
+      });
+    }) as typeof fetch,
+    lookupRemoteImageHost: async () => ["203.0.113.10"]
+  });
+
+  const sessions = await store.writeGenerationHistory([
+    createSession("https://images.example.com/result.png")
+  ]);
+
+  assert.equal(wasFetched, false);
+  assert.equal(
+    sessions[0].images[0].dataUrl,
+    "https://images.example.com/result.png"
+  );
+});
+
+test("远程图片域名解析到私网地址时保留原 URL", async () => {
+  const rootDir = await createTempHistoryDir();
+  let wasFetched = false;
+  const store = createGenerationHistoryStore(rootDir, {
+    allowedRemoteImageHosts: ["images.example.com"],
+    fetchRemoteImage: (async () => {
+      wasFetched = true;
+      return new Response(new Uint8Array([1]), {
+        headers: { "content-type": "image/png" }
+      });
+    }) as typeof fetch,
+    lookupRemoteImageHost: async () => ["127.0.0.1"]
+  });
+
+  const sessions = await store.writeGenerationHistory([
+    createSession("https://images.example.com/result.png")
+  ]);
+
+  assert.equal(wasFetched, false);
+  assert.equal(
+    sessions[0].images[0].dataUrl,
+    "https://images.example.com/result.png"
+  );
+});
+
+test("远程图片超过体积限制时保留原 URL", async () => {
+  const rootDir = await createTempHistoryDir();
+  const store = createGenerationHistoryStore(rootDir, {
+    allowedRemoteImageHosts: ["images.example.com"],
+    fetchRemoteImage: (async () =>
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: {
+          "content-length": "3",
+          "content-type": "image/png"
+        }
+      })) as typeof fetch,
+    lookupRemoteImageHost: async () => ["203.0.113.10"],
+    maxRemoteImageBytes: 2
+  });
+
+  const sessions = await store.writeGenerationHistory([
+    createSession("https://images.example.com/result.png")
+  ]);
+
+  assert.equal(
+    sessions[0].images[0].dataUrl,
+    "https://images.example.com/result.png"
+  );
+});
