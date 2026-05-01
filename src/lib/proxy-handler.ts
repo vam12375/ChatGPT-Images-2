@@ -183,6 +183,10 @@ function readResponsesSize(
   return width < height ? "1024x1536" : "1536x1024";
 }
 
+function readErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function buildOpenAIResponsesRequest(
   options: ImageRequestOptions,
   model: string
@@ -281,24 +285,39 @@ async function generateWithResponsesApi(
 export async function handleProxyRequest(
   options: ImageRequestOptions
 ): Promise<ProxyResult> {
+  const startedAt = Date.now();
   const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
   const responsesModel = process.env.OPENAI_RESPONSES_MODEL || "gpt-4.1-mini";
   const activeModel = options.apiMode === "responses" ? responsesModel : imageModel;
   const cacheKey = proxyMiddleware.generateCacheKey(options, activeModel);
+  const requestLogId =
+    process.env.ENABLE_REQUEST_LOG === "true"
+      ? proxyMiddleware.logRequest(options)
+      : null;
+
+  const completeRequestLog = (
+    status: "cache" | "error" | "success",
+    error?: unknown
+  ): void => {
+    if (!requestLogId) {
+      return;
+    }
+
+    proxyMiddleware.completeRequest(requestLogId, status, {
+      durationMs: Date.now() - startedAt,
+      error: error === undefined ? undefined : readErrorMessage(error)
+    });
+  };
 
   if (process.env.ENABLE_PROXY_CACHE === "true") {
     const cached = proxyMiddleware.getFromCache<ProxyResult>(cacheKey);
     if (cached) {
-      console.log("返回缓存的图片");
+      completeRequestLog("cache");
       return {
         ...cached,
         cached: true
       };
     }
-  }
-
-  if (process.env.ENABLE_REQUEST_LOG === "true") {
-    proxyMiddleware.logRequest(options);
   }
 
   const apiKey = proxyConfig.getNextApiKey();
@@ -310,10 +329,18 @@ export async function handleProxyRequest(
   }
 
   const openai = new OpenAI(openaiConfig) as OpenAIClient;
-  const result =
-    options.apiMode === "responses"
-      ? await generateWithResponsesApi(openai, options, responsesModel)
-      : await generateWithImagesApi(openai, options, imageModel);
+  let result: ProxyResult;
+
+  try {
+    result =
+      options.apiMode === "responses"
+        ? await generateWithResponsesApi(openai, options, responsesModel)
+        : await generateWithImagesApi(openai, options, imageModel);
+    completeRequestLog("success");
+  } catch (error) {
+    completeRequestLog("error", error);
+    throw error;
+  }
 
   if (process.env.ENABLE_PROXY_CACHE === "true") {
     proxyMiddleware.setCache(cacheKey, result);

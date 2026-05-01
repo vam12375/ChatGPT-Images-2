@@ -1,5 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 
+const unsafeAdminTokens = new Set(["change-me", "replace-with-long-random-token"]);
+
 function toErrorResponse(message: string, status: number): Response {
   return Response.json({ error: message }, { status });
 }
@@ -35,6 +37,13 @@ export function validateAdminRequest(
 ): Response | null {
   if (!expectedToken) {
     return toErrorResponse("未配置 PROXY_ADMIN_TOKEN，代理监控接口已关闭", 403);
+  }
+
+  if (unsafeAdminTokens.has(expectedToken.trim())) {
+    return toErrorResponse(
+      "请配置强随机 PROXY_ADMIN_TOKEN，默认占位令牌不可用于监控接口",
+      403
+    );
   }
 
   const receivedToken = readAdminToken(request);

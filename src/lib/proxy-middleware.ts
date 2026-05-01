@@ -16,10 +16,13 @@ export type ProxyCacheConfig = {
 };
 
 export type RequestLogEntry = {
+  durationMs?: number;
+  error?: string;
+  id: string;
   timestamp: string;
   prompt: string;
   size: string;
-  status: "pending";
+  status: "cache" | "error" | "pending" | "success";
 };
 
 function readPositiveInteger(value: string | undefined, fallback: number): number {
@@ -103,8 +106,11 @@ export class ProxyMiddleware {
     this.trimCache();
   }
 
-  logRequest(options: Pick<ImageRequestOptions, "prompt" | "size">): void {
+  logRequest(options: Pick<ImageRequestOptions, "prompt" | "size">): string {
+    const entryId = `${Date.now()}-${this.requestLog.length}`;
+
     this.requestLog.push({
+      id: entryId,
       timestamp: new Date().toISOString(),
       prompt: options.prompt.substring(0, 50),
       size: options.size,
@@ -115,6 +121,23 @@ export class ProxyMiddleware {
     if (this.requestLog.length > 100) {
       this.requestLog.shift();
     }
+
+    return entryId;
+  }
+
+  completeRequest(
+    entryId: string,
+    status: Exclude<RequestLogEntry["status"], "pending">,
+    details: { durationMs?: number; error?: string } = {}
+  ): void {
+    const entry = this.requestLog.find((item) => item.id === entryId);
+    if (!entry) {
+      return;
+    }
+
+    entry.status = status;
+    entry.durationMs = details.durationMs;
+    entry.error = details.error?.slice(0, 160);
   }
 
   getRequestLog(): RequestLogEntry[] {
