@@ -184,6 +184,14 @@ OPENAI_IMAGE_MODEL=gpt-image-2
 # 可选：中转 API 地址（通常建议包含 /v1）
 OPENAI_BASE_URL=
 
+# 图片编辑专用上游地址；Images API 编辑未配置时默认使用 API易兼容端点
+OPENAI_IMAGE_EDIT_BASE_URL=
+OPENAI_RESPONSES_EDIT_BASE_URL=
+
+# 可选：允许被历史记录安全拉取落盘的远程图片域名，留空时不拉取远程 URL
+OPENAI_IMAGE_PERSIST_ALLOWED_HOSTS=
+OPENAI_IMAGE_PERSIST_MAX_BYTES=8388608
+
 # 代理相关
 ENABLE_PROXY_CACHE=true
 PROXY_CACHE_DURATION=3600
@@ -194,8 +202,8 @@ ENABLE_REQUEST_LOG=true
 IMAGE_RATE_LIMIT_MAX=10
 IMAGE_RATE_LIMIT_WINDOW_MS=60000
 
-# 代理监控访问令牌
-PROXY_ADMIN_TOKEN=change-me
+# 代理监控访问令牌（必须替换为强随机值）
+PROXY_ADMIN_TOKEN=replace-with-long-random-token
 ```
 
 ### 3. 启动开发服务
@@ -236,7 +244,11 @@ npm test
 | `ENABLE_REQUEST_LOG` | 否 | `true` | 是否记录最近请求日志。 |
 | `IMAGE_RATE_LIMIT_MAX` | 否 | `10` | 单个客户端在窗口期内最多生成请求数。 |
 | `IMAGE_RATE_LIMIT_WINDOW_MS` | 否 | `60000` | 生成接口限流窗口，单位毫秒。 |
-| `PROXY_ADMIN_TOKEN` | 是 | `change-me` | 访问 `/api/proxy/stats` 的令牌。 |
+| `OPENAI_IMAGE_EDIT_BASE_URL` | 否 | 空 | Images API 图片编辑专用上游地址，通常用于兼容 `/images/edits` 的中转服务。 |
+| `OPENAI_RESPONSES_EDIT_BASE_URL` | 否 | 空 | Responses API 图片编辑专用上游地址；未配置时依次回退到 `OPENAI_RESPONSES_BASE_URL`、`OPENAI_BASE_URL`。 |
+| `OPENAI_IMAGE_PERSIST_ALLOWED_HOSTS` | 否 | 空 | 允许历史记录拉取并落盘的远程图片域名白名单，逗号分隔；留空时不拉取远程 URL。 |
+| `OPENAI_IMAGE_PERSIST_MAX_BYTES` | 否 | `8388608` | 单张远程图片落盘最大字节数，默认 8MB。 |
+| `PROXY_ADMIN_TOKEN` | 是 | 强随机字符串 | 访问 `/api/proxy/stats` 的令牌；默认占位值会被服务端拒绝。 |
 
 > `OPENAI_API_KEY` 和 `OPENAI_API_KEYS` 至少配置一个。
 
@@ -437,7 +449,7 @@ Content-Type: multipart/form-data
 | `output_format` | 否 | `png`、`jpeg`、`webp`，默认 `png`。 |
 | `background` | 否 | 仅支持 `auto` 或 `opaque`，不发送 `transparent`。 |
 
-服务端会固定转发 `model=gpt-image-2` 到 `OPENAI_BASE_URL` 的 `/images/edits`，默认兼容 API易 的 `https://api.apiyi.com/v1/images/edits`。
+服务端会固定转发 `model=gpt-image-2`。Images API 编辑优先使用 `OPENAI_IMAGE_EDIT_BASE_URL` 或 `OPENAI_IMAGES_EDIT_BASE_URL`，未配置时默认兼容 API易 的 `https://api.apiyi.com/v1/images/edits`；Responses API 编辑优先使用 `OPENAI_RESPONSES_EDIT_BASE_URL`、`OPENAI_RESPONSES_BASE_URL` 或 `OPENAI_BASE_URL`。
 
 ### 3. 获取最近记录
 
@@ -530,6 +542,7 @@ Authorization: Bearer <PROXY_ADMIN_TOKEN>
 - 保留数量：最近 `12` 条
 - 存储内容：标题、提示词、操作类型、尺寸标签、质量标签、输出格式、图片访问 URL、模型名、token 用量、创建时间；编辑记录还会保存来源图片 ID、参考图数量和是否使用 mask
 - 兼容策略：读取旧版 base64 历史时会自动把图片落盘，并瘦身历史 JSON
+- 远程 URL 策略：默认不主动拉取远程图片；如果配置 `OPENAI_IMAGE_PERSIST_ALLOWED_HOSTS`，只会拉取白名单内 HTTPS 域名、非私网解析地址、合法图片类型且不超过大小限制的图片，成功后转为本地历史图片 URL
 - 容错策略：即使保存失败，也不会阻塞图片生成主流程
 
 ## 代理能力说明

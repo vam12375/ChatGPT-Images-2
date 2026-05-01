@@ -53,7 +53,7 @@ ENABLE_PROXY_CACHE=true           # 启用缓存
 PROXY_CACHE_DURATION=3600          # 缓存持续时间（秒）
 PROXY_CACHE_MAX_ENTRIES=50         # 内存缓存最多条目
 ENABLE_REQUEST_LOG=true            # 启用请求日志
-PROXY_ADMIN_TOKEN=change-me        # 监控接口访问令牌
+PROXY_ADMIN_TOKEN=replace-with-long-random-token  # 监控接口访问令牌，必须替换为强随机值
 
 # 本地防滥用
 IMAGE_RATE_LIMIT_MAX=10
@@ -61,6 +61,13 @@ IMAGE_RATE_LIMIT_WINDOW_MS=60000
 
 # 自定义 API 代理地址 (可选，用于解决国内网络问题或使用第三方中转 API)
 # OPENAI_BASE_URL=https://api.openai.com/v1
+
+# Images API 图片编辑专用上游 (可选)
+# OPENAI_IMAGE_EDIT_BASE_URL=https://api.apiyi.com/v1
+
+# 远程图片历史落盘白名单 (可选，留空时不主动拉取远程 URL)
+# OPENAI_IMAGE_PERSIST_ALLOWED_HOSTS=images.example.com,cdn.example.com
+# OPENAI_IMAGE_PERSIST_MAX_BYTES=8388608
 ```
 
 ## API 端点
@@ -175,19 +182,19 @@ Authorization: Bearer <PROXY_ADMIN_TOKEN>
 ```
 src/
 ├── lib/
-│   ├── proxy-config.js        # 密钥管理和负载均衡
-│   ├── proxy-middleware.js    # 缓存和日志中间件
-│   ├── rate-limit.js          # 本地内存限流
-│   ├── admin-auth.js          # 监控接口鉴权
-│   ├── openai-retry.js        # OpenAI 重试策略
-│   ├── proxy-handler.js       # 核心代理逻辑（重试、缓存）
-│   ├── image-options.js       # 请求参数验证
-│   └── openai-error.js        # 错误处理
+│   ├── proxy-config.ts        # 密钥管理和负载均衡
+│   ├── proxy-middleware.ts    # 缓存和日志中间件
+│   ├── rate-limit.ts          # 本地内存限流
+│   ├── admin-auth.ts          # 监控接口鉴权
+│   ├── openai-retry.ts        # OpenAI 重试策略
+│   ├── proxy-handler.ts       # 核心代理逻辑（重试、缓存）
+│   ├── image-options.ts       # 请求参数验证
+│   └── openai-error.ts        # 错误处理
 └── app/
     └── api/
-        ├── generation-history/image/route.js  # 本地图片读取端点
-        ├── images/generate/route.js           # 生成图片端点
-        └── proxy/stats/route.js               # 监控端点
+        ├── generation-history/image/route.ts  # 本地图片读取端点
+        ├── images/generate/route.ts           # 生成图片端点
+        └── proxy/stats/route.ts               # 监控端点
 ```
 
 ## 使用示例
@@ -203,7 +210,7 @@ npm install
 OPENAI_API_KEY=sk-your-key
 OPENAI_IMAGE_MODEL=gpt-image-2
 ENABLE_PROXY_CACHE=true
-PROXY_ADMIN_TOKEN=change-me
+PROXY_ADMIN_TOKEN=replace-with-long-random-token
 ```
 
 ### 3. 运行开发服务器
@@ -227,12 +234,12 @@ curl -X POST http://localhost:3000/api/images/generate \
 
 # 查看代理统计
 curl http://localhost:3000/api/proxy/stats \
-  -H "Authorization: Bearer change-me"
+  -H "Authorization: Bearer replace-with-long-random-token"
 
 # 清空缓存
 curl -X POST http://localhost:3000/api/proxy/stats \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer change-me" \
+  -H "Authorization: Bearer replace-with-long-random-token" \
   -d '{"action": "clear-cache"}'
 ```
 

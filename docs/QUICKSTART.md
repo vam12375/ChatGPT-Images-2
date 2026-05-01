@@ -16,8 +16,15 @@ OPENAI_API_KEYS=sk-proj-key1,sk-proj-key2,sk-proj-key3
 # 模型配置
 OPENAI_IMAGE_MODEL=gpt-image-2
 
-# 可选：中转 API 地址，图片编辑会请求 /images/edits
-OPENAI_BASE_URL=https://api.apiyi.com/v1
+# 可选：通用中转 API 地址
+OPENAI_BASE_URL=https://api.openai.com/v1
+
+# 可选：Images API 图片编辑专用上游
+OPENAI_IMAGE_EDIT_BASE_URL=https://api.apiyi.com/v1
+
+# 可选：远程图片历史落盘白名单，留空时不主动拉取远程 URL
+OPENAI_IMAGE_PERSIST_ALLOWED_HOSTS=
+OPENAI_IMAGE_PERSIST_MAX_BYTES=8388608
 
 # 启用代理功能
 ENABLE_PROXY_CACHE=true
@@ -28,7 +35,7 @@ ENABLE_REQUEST_LOG=true
 # 本地防滥用与监控鉴权
 IMAGE_RATE_LIMIT_MAX=10
 IMAGE_RATE_LIMIT_WINDOW_MS=60000
-PROXY_ADMIN_TOKEN=change-me
+PROXY_ADMIN_TOKEN=replace-with-long-random-token
 ```
 
 ### 第2步：启动服务
@@ -76,14 +83,14 @@ curl -X POST http://localhost:3000/api/images/edit \
 #### 查看统计信息
 ```bash
 curl http://localhost:3000/api/proxy/stats \
-  -H "Authorization: Bearer change-me"
+  -H "Authorization: Bearer replace-with-long-random-token"
 ```
 
 #### 清空缓存
 ```bash
 curl -X POST http://localhost:3000/api/proxy/stats \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer change-me" \
+  -H "Authorization: Bearer replace-with-long-random-token" \
   -d '{"action": "clear-cache"}'
 ```
 
@@ -157,13 +164,13 @@ ENABLE_PROXY_CACHE=false
 
 创建 `Dockerfile`：
 ```dockerfile
-FROM node:18-alpine
+FROM node:22-alpine
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 COPY . .
 RUN npm run build
-CMD ["npm", "start"]
+CMD ["npm", "run", "start"]
 ```
 
 构建和运行：
