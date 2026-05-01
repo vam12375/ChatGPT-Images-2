@@ -1,4 +1,6 @@
 import { promises as fs } from "node:fs";
+import { lookup as lookupDns } from "node:dns/promises";
+import { isIP } from "node:net";
 import path from "node:path";
 
 import type {
@@ -16,16 +18,27 @@ const HISTORY_LIMIT = 12;
 const HISTORY_DIR = path.join(process.cwd(), ".local");
 const HISTORY_FILE = path.join(HISTORY_DIR, "generation-history.json");
 const IMAGE_DIR_NAME = "generated-images";
+const DEFAULT_REMOTE_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const remoteImageMimeTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 type ParsedDataUrl = {
   bytes: Buffer;
-  extension: string;
   mimeType: string;
 };
+
+type RemoteImageLookup = (hostname: string) => Promise<string[]>;
+type RemoteImageFetch = typeof fetch;
 
 export type StoredImageFile = {
   bytes: Buffer;
   mimeType: string;
+};
+
+export type GenerationHistoryStoreOptions = {
+  allowedRemoteImageHosts?: string[];
+  fetchRemoteImage?: RemoteImageFetch;
+  lookupRemoteImageHost?: RemoteImageLookup;
+  maxRemoteImageBytes?: number;
 };
 
 export type GenerationHistoryStore = {
@@ -159,6 +172,39 @@ function sanitizePathPart(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "image";
 }
 
+function readAllowedRemoteImageHosts(
+  env: Record<string, string | undefined> = process.env
+): string[] {
+  return normalizeAllowedRemoteImageHosts(
+    (env.OPENAI_IMAGE_PERSIST_ALLOWED_HOSTS || "").split(",")
+  );
+}
+
+function normalizeAllowedRemoteImageHosts(hosts: string[]): string[] {
+  return hosts
+    .map((host) => host.trim().toLowerCase().replace(/\.+$/, ""))
+    .filter(Boolean);
+}
+
+function readPositiveInteger(
+  value: number | string | undefined,
+  fallback: number
+): number {
+  const numericValue = Number(value);
+  return Number.isInteger(numericValue) && numericValue > 0
+    ? numericValue
+    : fallback;
+}
+
+function readRemoteImageMaxBytes(
+  env: Record<string, string | undefined> = process.env
+): number {
+  return readPositiveInteger(
+    env.OPENAI_IMAGE_PERSIST_MAX_BYTES,
+    DEFAULT_REMOTE_IMAGE_MAX_BYTES
+  );
+}
+
 function parseImageDataUrl(dataUrl: string): ParsedDataUrl | null {
   const match = dataUrl.match(/^data:image\/(png|jpeg|jpg|webp);base64,([\s\S]+)$/i);
 
@@ -176,7 +222,6 @@ function parseImageDataUrl(dataUrl: string): ParsedDataUrl | null {
 
   return {
     bytes,
-    extension,
     mimeType: `image/${extension}`
   };
 }
@@ -184,6 +229,18 @@ function parseImageDataUrl(dataUrl: string): ParsedDataUrl | null {
 function createImageUrl(sessionId: string, imageId: string): string {
   const query = new URLSearchParams({ sessionId, imageId });
   return `/api/generation-history/image?${query.toString()}`;
+}
+
+function extensionFromMimeType(mimeType: string): "jpeg" | "png" | "webp" {
+  if (mimeType === "image/jpeg") {
+    return "jpeg";
+  }
+
+  if (mimeType === "image/webp") {
+    return "webp";
+  }
+
+  return "png";
 }
 
 function createImagePath(
@@ -200,6 +257,30 @@ function createImagePath(
   );
 }
 
+async function persistImageBytes(
+  rootDir: string,
+  sessionId: string,
+  imageId: string,
+  bytes: Buffer,
+  mimeType: string
+): Promise<StoredGeneratedImage> {
+  const imagePath = createImagePath(
+    rootDir,
+    sessionId,
+    imageId,
+    extensionFromMimeType(mimeType)
+  );
+
+  await fs.mkdir(path.dirname(imagePath), { recursive: true });
+  await fs.writeFile(imagePath, bytes);
+
+  return {
+    id: imageId,
+    dataUrl: createImageUrl(sessionId, imageId),
+    mimeType
+  };
+}
+
 async function persistImageDataUrl(
   rootDir: string,
   sessionId: string,
@@ -210,32 +291,229 @@ async function persistImageDataUrl(
     return image;
   }
 
-  const imagePath = createImagePath(
+  return persistImageBytes(
     rootDir,
     sessionId,
     image.id,
-    parsed.extension
+    parsed.bytes,
+    parsed.mimeType
+  );
+}
+
+function parseIpv4Address(value: string): number[] | null {
+  if (isIP(value) !== 4) {
+    return null;
+  }
+
+  return value.split(".").map((part) => Number(part));
+}
+
+function isPrivateIpv4(value: string): boolean {
+  const parts = parseIpv4Address(value);
+  if (!parts) {
+    return false;
+  }
+
+  const [first, second] = parts;
+
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    first >= 224
+  );
+}
+
+function isPrivateIpv6(value: string): boolean {
+  const normalized = value.toLowerCase();
+  const mappedIpv4 = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+
+  if (mappedIpv4) {
+    return isPrivateIpv4(mappedIpv4[1]);
+  }
+
+  return (
+    normalized === "::" ||
+    normalized === "::1" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe80:")
+  );
+}
+
+function isPrivateIpAddress(value: string): boolean {
+  const version = isIP(value);
+
+  if (version === 4) {
+    return isPrivateIpv4(value);
+  }
+
+  if (version === 6) {
+    return isPrivateIpv6(value);
+  }
+
+  return false;
+}
+
+function normalizeHostname(value: string): string {
+  return value.trim().toLowerCase().replace(/\.+$/, "");
+}
+
+async function defaultLookupRemoteImageHost(hostname: string): Promise<string[]> {
+  const records = await lookupDns(hostname, { all: true, verbatim: true });
+  return records.map((record) => record.address);
+}
+
+async function isSafeRemoteImageUrl(
+  imageUrl: URL,
+  allowedHosts: string[],
+  lookupRemoteImageHost: RemoteImageLookup
+): Promise<boolean> {
+  if (imageUrl.protocol !== "https:" || imageUrl.username || imageUrl.password) {
+    return false;
+  }
+
+  const hostname = normalizeHostname(imageUrl.hostname);
+  if (!allowedHosts.includes(hostname)) {
+    return false;
+  }
+
+  if (isPrivateIpAddress(hostname)) {
+    return false;
+  }
+
+  try {
+    const addresses = await lookupRemoteImageHost(hostname);
+    return addresses.length > 0 && addresses.every((address) => !isPrivateIpAddress(address));
+  } catch {
+    return false;
+  }
+}
+
+function readImageMimeType(value: string | null): string | null {
+  const mimeType = (value || "").split(";")[0].trim().toLowerCase();
+  return remoteImageMimeTypes.has(mimeType) ? mimeType : null;
+}
+
+async function readResponseBytes(response: Response, maxBytes: number): Promise<Buffer> {
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength > maxBytes) {
+    throw new Error("远程图片超过允许大小");
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > maxBytes) {
+      throw new Error("远程图片超过允许大小");
+    }
+
+    return bytes;
+  }
+
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  while (true) {
+    const result = await reader.read();
+    if (result.done) {
+      break;
+    }
+
+    const chunk = Buffer.from(result.value);
+    totalBytes += chunk.length;
+    if (totalBytes > maxBytes) {
+      throw new Error("远程图片超过允许大小");
+    }
+
+    chunks.push(chunk);
+  }
+
+  return Buffer.concat(chunks);
+}
+
+async function persistRemoteImageUrl(
+  rootDir: string,
+  sessionId: string,
+  image: StoredGeneratedImage,
+  options: Required<GenerationHistoryStoreOptions>
+): Promise<StoredGeneratedImage> {
+  let imageUrl: URL;
+
+  try {
+    imageUrl = new URL(image.dataUrl);
+  } catch {
+    return image;
+  }
+
+  const isSafeUrl = await isSafeRemoteImageUrl(
+    imageUrl,
+    options.allowedRemoteImageHosts,
+    options.lookupRemoteImageHost
   );
 
-  await fs.mkdir(path.dirname(imagePath), { recursive: true });
-  await fs.writeFile(imagePath, parsed.bytes);
+  if (!isSafeUrl) {
+    return image;
+  }
 
-  return {
-    id: image.id,
-    dataUrl: createImageUrl(sessionId, image.id),
-    mimeType: parsed.mimeType
-  };
+  try {
+    /*
+     * 拒绝重定向，避免白名单 URL 再跳转到内网地址形成 SSRF。
+     */
+    const response = await options.fetchRemoteImage(imageUrl.toString(), {
+      redirect: "error"
+    });
+    const mimeType = readImageMimeType(response.headers.get("content-type"));
+
+    if (!response.ok || !mimeType) {
+      return image;
+    }
+
+    const bytes = await readResponseBytes(response, options.maxRemoteImageBytes);
+    if (bytes.length === 0) {
+      return image;
+    }
+
+    return persistImageBytes(rootDir, sessionId, image.id, bytes, mimeType);
+  } catch {
+    return image;
+  }
+}
+
+async function persistImageValue(
+  rootDir: string,
+  sessionId: string,
+  image: StoredGeneratedImage,
+  options: Required<GenerationHistoryStoreOptions>
+): Promise<StoredGeneratedImage> {
+  const dataUrlImage = await persistImageDataUrl(rootDir, sessionId, image);
+
+  if (dataUrlImage.dataUrl !== image.dataUrl) {
+    return dataUrlImage;
+  }
+
+  return persistRemoteImageUrl(rootDir, sessionId, image, options);
 }
 
 async function compactSessionImages(
   rootDir: string,
-  session: StoredGenerationSession
+  session: StoredGenerationSession,
+  options: Required<GenerationHistoryStoreOptions>
 ): Promise<{ changed: boolean; session: StoredGenerationSession }> {
   let changed = false;
   const images: StoredGeneratedImage[] = [];
 
   for (const image of session.images) {
-    const compactedImage = await persistImageDataUrl(rootDir, session.id, image);
+    const compactedImage = await persistImageValue(
+      rootDir,
+      session.id,
+      image,
+      options
+    );
     changed ||= compactedImage.dataUrl !== image.dataUrl;
     images.push(compactedImage);
   }
@@ -251,13 +529,14 @@ async function compactSessionImages(
 
 async function compactSessions(
   rootDir: string,
-  sessions: StoredGenerationSession[]
+  sessions: StoredGenerationSession[],
+  options: Required<GenerationHistoryStoreOptions>
 ): Promise<{ changed: boolean; sessions: StoredGenerationSession[] }> {
   let changed = false;
   const compactedSessions: StoredGenerationSession[] = [];
 
   for (const session of sessions) {
-    const compacted = await compactSessionImages(rootDir, session);
+    const compacted = await compactSessionImages(rootDir, session, options);
     changed ||= compacted.changed;
     compactedSessions.push(compacted.session);
   }
@@ -318,9 +597,23 @@ async function findStoredImagePath(
 }
 
 export function createGenerationHistoryStore(
-  rootDir = HISTORY_DIR
+  rootDir = HISTORY_DIR,
+  storeOptions: GenerationHistoryStoreOptions = {}
 ): GenerationHistoryStore {
   const historyFile = path.join(rootDir, "generation-history.json");
+  const options: Required<GenerationHistoryStoreOptions> = {
+    allowedRemoteImageHosts:
+      storeOptions.allowedRemoteImageHosts === undefined
+        ? readAllowedRemoteImageHosts()
+        : normalizeAllowedRemoteImageHosts(storeOptions.allowedRemoteImageHosts),
+    fetchRemoteImage: storeOptions.fetchRemoteImage ?? fetch,
+    lookupRemoteImageHost:
+      storeOptions.lookupRemoteImageHost ?? defaultLookupRemoteImageHost,
+    maxRemoteImageBytes: readPositiveInteger(
+      storeOptions.maxRemoteImageBytes,
+      readRemoteImageMaxBytes()
+    )
+  };
 
   return {
     historyFile,
@@ -329,7 +622,7 @@ export function createGenerationHistoryStore(
       try {
         const content = await fs.readFile(historyFile, "utf8");
         const sessions = normalizeHistory(JSON.parse(content));
-        const compacted = await compactSessions(rootDir, sessions);
+        const compacted = await compactSessions(rootDir, sessions, options);
 
         if (compacted.changed) {
           await writeHistoryFile(historyFile, compacted.sessions);
@@ -349,7 +642,7 @@ export function createGenerationHistoryStore(
       input: unknown
     ): Promise<StoredGenerationSession[]> {
       const sessions = normalizeHistory(input);
-      const compacted = await compactSessions(rootDir, sessions);
+      const compacted = await compactSessions(rootDir, sessions, options);
 
       await writeHistoryFile(historyFile, compacted.sessions);
 
