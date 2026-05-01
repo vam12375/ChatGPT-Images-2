@@ -11,7 +11,12 @@ import {
 import type { FormEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 
-import type { ImageOutputFormat } from "@/lib/image-options";
+import {
+  maxEditUploadBytes,
+  resolveCompactEditImageSize,
+  shouldCompactEditImage
+} from "@/lib/image-edit-upload";
+import type { GenerationApiMode, ImageOutputFormat } from "@/lib/image-options";
 
 import { EditComposer } from "./EditComposer";
 import {
@@ -37,13 +42,83 @@ type ImageEditWorkspaceProps = {
   onEditComplete: (session: GenerationSession) => void;
 };
 
+type EditableSourceFile = {
+  file: File;
+  height: number;
+  width: number;
+};
+
+const editApiModeOptions: Array<{ label: string; value: GenerationApiMode }> = [
+  { label: "Images API", value: "images" },
+  { label: "Responses API", value: "responses" }
+];
+const defaultEditApiMode: GenerationApiMode = "images";
+
 const initialMaskState: EditMaskState = {
   canRedo: false,
   canUndo: false,
   hasMask: false
 };
 
-async function createSourceFile(target: ImageEditTarget): Promise<File> {
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality: number
+): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    canvas.toBlob(resolve, type, quality);
+  });
+}
+
+function loadBlobImage(blob: Blob): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const image = new Image();
+
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("源图读取失败，请重新选择图片"));
+    };
+    image.src = objectUrl;
+  });
+}
+
+async function encodeCompactImage(canvas: HTMLCanvasElement): Promise<Blob> {
+  const candidates: Blob[] = [];
+
+  /*
+   * 为了避开中转网关 413，编辑参考图优先压成浏览器支持的轻量格式。
+   */
+  for (const type of ["image/webp", "image/jpeg"]) {
+    for (const quality of [0.86, 0.76, 0.66, 0.56]) {
+      const blob = await canvasToBlob(canvas, type, quality);
+
+      if (!blob || blob.size === 0) {
+        continue;
+      }
+
+      candidates.push(blob);
+      if (blob.size <= maxEditUploadBytes) {
+        return blob;
+      }
+    }
+  }
+
+  const smallest = candidates.sort((left, right) => left.size - right.size)[0];
+  if (!smallest) {
+    throw new Error("源图压缩失败，请重新选择图片");
+  }
+
+  return smallest;
+}
+
+async function createSourceFile(
+  target: ImageEditTarget
+): Promise<EditableSourceFile> {
   const response = await fetch(target.image.dataUrl);
 
   if (!response.ok) {
@@ -51,12 +126,53 @@ async function createSourceFile(target: ImageEditTarget): Promise<File> {
   }
 
   const blob = await response.blob();
+  const image = await loadBlobImage(blob);
+  const sourceWidth = image.naturalWidth || image.width || 1024;
+  const sourceHeight = image.naturalHeight || image.height || 1024;
+  const compactSize = resolveCompactEditImageSize(sourceWidth, sourceHeight);
   const mimeType = blob.type || target.image.mimeType || "image/png";
   const extension = mimeType.split("/")[1] || "png";
 
-  return new File([blob], `source-${target.image.id}.${extension}`, {
-    type: mimeType
-  });
+  if (
+    !shouldCompactEditImage(blob.size) &&
+    compactSize.width === sourceWidth &&
+    compactSize.height === sourceHeight
+  ) {
+    return {
+      file: new File([blob], `source-${target.image.id}.${extension}`, {
+        type: mimeType
+      }),
+      height: sourceHeight,
+      width: sourceWidth
+    };
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = compactSize.width;
+  canvas.height = compactSize.height;
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("当前浏览器不支持图片压缩，请换一张更小的图片再编辑");
+  }
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  const compactBlob = await encodeCompactImage(canvas);
+  const compactMimeType = compactBlob.type || "image/jpeg";
+  const compactExtension = compactMimeType.split("/")[1] || "jpg";
+
+  return {
+    file: new File(
+      [compactBlob],
+      `source-${target.image.id}.${compactExtension}`,
+      { type: compactMimeType }
+    ),
+    height: compactSize.height,
+    width: compactSize.width
+  };
 }
 
 export function ImageEditWorkspace({
@@ -68,12 +184,15 @@ export function ImageEditWorkspace({
   const stageRef = useRef<EditImageStageHandle | null>(null);
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
+  const [editApiMode, setEditApiMode] =
+    useState<GenerationApiMode>(defaultEditApiMode);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [maskState, setMaskState] = useState<EditMaskState>(initialMaskState);
 
   useEffect(() => {
     setPrompt("");
     setError("");
+    setEditApiMode(defaultEditApiMode);
     setMaskState(initialMaskState);
   }, [target.image.id]);
 
@@ -91,7 +210,10 @@ export function ImageEditWorkspace({
 
     try {
       const sourceFile = await createSourceFile(target);
-      const maskBlob = await stageRef.current?.exportMaskBlob();
+      const maskBlob = await stageRef.current?.exportMaskBlob({
+        height: sourceFile.height,
+        width: sourceFile.width
+      });
       const formData = new FormData();
 
       formData.set("prompt", editPrompt);
@@ -99,11 +221,12 @@ export function ImageEditWorkspace({
       formData.set("quality", "high");
       formData.set("output_format", target.session.outputFormat);
       formData.set("background", "auto");
+      formData.set("api_mode", editApiMode);
       formData.set("size_label", target.session.sizeLabel);
       formData.set("size_value", target.session.sizeValue);
       formData.set("quality_label", target.session.qualityLabel || "high");
       formData.set("source_image_id", target.image.id);
-      formData.append("image[]", sourceFile);
+      formData.append("image[]", sourceFile.file);
 
       if (maskBlob) {
         formData.set("mask", new File([maskBlob], "mask.png", { type: "image/png" }));
@@ -203,9 +326,12 @@ export function ImageEditWorkspace({
       ) : null}
 
       <EditComposer
+        apiMode={editApiMode}
+        apiModeOptions={editApiModeOptions}
         hasMask={maskState.hasMask}
         isSubmitting={isSubmitting}
         prompt={prompt}
+        onApiModeChange={setEditApiMode}
         onPromptChange={setPrompt}
         onSubmit={handleSubmit}
       />

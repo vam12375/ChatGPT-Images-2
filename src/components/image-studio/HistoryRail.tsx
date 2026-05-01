@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import type { RefObject } from "react";
 
+import { ThemeToggle } from "../ThemeToggle";
 import type { GenerationSession } from "./types";
 
 type HistoryRailProps = {
@@ -57,15 +58,18 @@ export function HistoryRail({
         <span className="rail-logo" aria-hidden="true">
           <WandSparkles size={18} />
         </span>
-        <button
-          className="icon-button rail-collapse-button"
-          type="button"
-          aria-label={isRailCollapsed ? "展开侧栏" : "折叠侧栏"}
-          aria-pressed={isRailCollapsed}
-          onClick={onToggleRail}
-        >
-          <PanelLeft size={18} />
-        </button>
+        <div style={{ display: "flex", gap: "4px" }}>
+          <ThemeToggle />
+          <button
+            className="icon-button rail-collapse-button"
+            type="button"
+            aria-label={isRailCollapsed ? "展开侧栏" : "折叠侧栏"}
+            aria-pressed={isRailCollapsed}
+            onClick={onToggleRail}
+          >
+            <PanelLeft size={18} />
+          </button>
+        </div>
       </div>
 
       <nav className="rail-actions" aria-label="快捷入口">

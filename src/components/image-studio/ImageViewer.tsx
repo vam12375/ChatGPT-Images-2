@@ -11,6 +11,8 @@ type ImageViewerProps = {
   onZoomChange: (delta: number) => void;
 };
 
+import { useEffect } from "react";
+
 export function ImageViewer({
   viewerImage,
   viewerZoom,
@@ -19,6 +21,27 @@ export function ImageViewer({
   onResetZoom,
   onZoomChange
 }: ImageViewerProps) {
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      // 滚轮向上(负值)放大，向下(正值)缩小
+      const delta = e.deltaY < 0 ? 0.1 : -0.1;
+      onZoomChange(delta);
+    };
+
+    // 需要在捕获阶段阻止默认行为，所以使用原生事件监听
+    const stage = document.querySelector('.viewer-stage');
+    if (stage) {
+      stage.addEventListener('wheel', handleWheel as EventListener, { passive: false });
+    }
+
+    return () => {
+      if (stage) {
+        stage.removeEventListener('wheel', handleWheel as EventListener);
+      }
+    };
+  }, [onZoomChange]);
+
   return (
     <div className="image-viewer" role="dialog" aria-modal="true" aria-label="图片查看器">
       <div className="viewer-toolbar">

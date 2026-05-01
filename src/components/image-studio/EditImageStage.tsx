@@ -17,9 +17,14 @@ export type EditMaskState = {
   hasMask: boolean;
 };
 
+export type EditMaskExportOptions = {
+  height: number;
+  width: number;
+};
+
 export type EditImageStageHandle = {
   clearMask: () => void;
-  exportMaskBlob: () => Promise<Blob | null>;
+  exportMaskBlob: (options?: EditMaskExportOptions) => Promise<Blob | null>;
   redoMask: () => void;
   undoMask: () => void;
 };
@@ -237,23 +242,43 @@ export const EditImageStage = forwardRef<
         );
         emitMaskState();
       },
-      async exportMaskBlob() {
+      async exportMaskBlob(options) {
         const selectionCanvas = selectionCanvasRef.current;
 
         if (!selectionCanvas || !hasSelection(selectionCanvas)) {
           return null;
         }
 
-        const selectionContext = getCanvasContext(selectionCanvas);
+        const targetWidth = options?.width ?? selectionCanvas.width;
+        const targetHeight = options?.height ?? selectionCanvas.height;
+        const sourceCanvas =
+          targetWidth === selectionCanvas.width &&
+          targetHeight === selectionCanvas.height
+            ? selectionCanvas
+            : document.createElement("canvas");
+
+        if (sourceCanvas !== selectionCanvas) {
+          sourceCanvas.width = targetWidth;
+          sourceCanvas.height = targetHeight;
+          getCanvasContext(sourceCanvas).drawImage(
+            selectionCanvas,
+            0,
+            0,
+            targetWidth,
+            targetHeight
+          );
+        }
+
+        const selectionContext = getCanvasContext(sourceCanvas);
         const selectionData = selectionContext.getImageData(
           0,
           0,
-          selectionCanvas.width,
-          selectionCanvas.height
+          sourceCanvas.width,
+          sourceCanvas.height
         );
         const maskCanvas = document.createElement("canvas");
-        maskCanvas.width = selectionCanvas.width;
-        maskCanvas.height = selectionCanvas.height;
+        maskCanvas.width = sourceCanvas.width;
+        maskCanvas.height = sourceCanvas.height;
 
         const maskContext = getCanvasContext(maskCanvas);
         const maskData = maskContext.createImageData(
