@@ -1,7 +1,9 @@
 import {
+  generationApiModes,
   imageOutputFormats,
   imageQualities,
   imageSizes,
+  type GenerationApiMode,
   type ImageOutputFormat,
   type ImageQuality,
   type ImageSize
@@ -15,11 +17,13 @@ export type ImageEditFields = {
   quality: ImageQuality;
   outputFormat: ImageOutputFormat;
   background: ImageEditBackground;
+  apiMode: GenerationApiMode;
 };
 
 const allowedSizes = new Set<string>(imageSizes);
 const allowedQualities = new Set<string>(imageQualities);
 const allowedFormats = new Set<string>(imageOutputFormats);
+const allowedApiModes = new Set<string>(generationApiModes);
 const allowedBackgrounds = new Set<string>(["auto", "opaque"]);
 const allowedImageTypes = new Set([
   "image/png",
@@ -108,6 +112,12 @@ export function parseImageEditFields(input: unknown): ImageEditFields {
       allowedBackgrounds,
       "auto",
       "图片编辑背景仅支持 auto 或 opaque"
+    ),
+    apiMode: readChoice<GenerationApiMode>(
+      record.api_mode ?? record.apiMode,
+      allowedApiModes,
+      "images",
+      "图片编辑接口类型无效"
     )
   };
 }

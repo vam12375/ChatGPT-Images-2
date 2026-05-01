@@ -12,7 +12,8 @@ test("解析图片编辑字段并使用安全默认值", () => {
     size: "1536x1024",
     quality: "high",
     output_format: "webp",
-    background: "opaque"
+    background: "opaque",
+    api_mode: "responses"
   });
 
   assert.equal(fields.prompt, "把天空改成粉色晚霞");
@@ -20,6 +21,7 @@ test("解析图片编辑字段并使用安全默认值", () => {
   assert.equal(fields.quality, "high");
   assert.equal(fields.outputFormat, "webp");
   assert.equal(fields.background, "opaque");
+  assert.equal(fields.apiMode, "responses");
 });
 
 test("拒绝空编辑提示词", () => {
@@ -58,3 +60,11 @@ test("拒绝不受编辑接口支持的透明背景", () => {
   );
 });
 
+
+test("图片编辑未指定接口时默认使用 Images API", () => {
+  const fields = parseImageEditFields({
+    prompt: "整体改成 85mm 人像"
+  });
+
+  assert.equal(fields.apiMode, "images");
+});

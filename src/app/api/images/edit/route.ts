@@ -6,6 +6,7 @@ import {
   writeGenerationHistory
 } from "@/lib/generation-history-store";
 import type { StoredGenerationSession } from "@/lib/generation-history-types";
+import { readImageEditBaseUrl } from "@/lib/image-edit-config";
 import {
   parseImageEditFields,
   validateImageEditFiles
@@ -89,7 +90,8 @@ export async function POST(request: Request): Promise<Response> {
       size: formData.get("size"),
       quality: formData.get("quality"),
       output_format: formData.get("output_format"),
-      background: formData.get("background")
+      background: formData.get("background"),
+      api_mode: formData.get("api_mode")
     });
     images = readFiles(formData.getAll("image[]"));
     mask = readFile(formData.get("mask"));
@@ -101,10 +103,12 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const result = await sendImageEditRequest({
       apiKey: proxyConfig.getNextApiKey(),
-      baseUrl: process.env.OPENAI_BASE_URL || "https://api.apiyi.com/v1",
+      baseUrl: readImageEditBaseUrl(fields.apiMode),
       fields,
+      imageModel: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2",
       images,
-      mask
+      mask,
+      responsesModel: process.env.OPENAI_RESPONSES_MODEL || "gpt-4.1-mini"
     });
     const session: StoredGenerationSession = {
       id: createSessionId(),
@@ -118,7 +122,7 @@ export async function POST(request: Request): Promise<Response> {
       sizeLabel: readString(formData.get("size_label")) || fields.size,
       sizeValue: readString(formData.get("size_value")) || fields.size,
       qualityLabel: readString(formData.get("quality_label")) || fields.quality,
-      apiMode: "images",
+      apiMode: fields.apiMode,
       outputFormat: fields.outputFormat,
       count: result.images.length,
       images: result.images,
